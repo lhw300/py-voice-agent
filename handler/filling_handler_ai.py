@@ -3,9 +3,9 @@ import logging
 import json
 import os
 from openai import OpenAI
-from handler.base_handler import BaseHandler
+from intent.intent_handler import IntentHandler
 from intent.intent_result import IntentResult
-from models import EivrResponse
+from models import ChatAnswer
 
 logger = logging.getLogger(__name__)
 
@@ -92,12 +92,12 @@ def ask_ai2(system_prompt: str, history: list) -> dict:
     return {"answer": "抱歉，请重新说一遍", "slots": {}, "is_complete": False}
 
 
-class FillingHandlerAI(BaseHandler):
+class FillingHandlerAI(IntentHandler):
 
     def __init__(self):
         self.system_prompt = load_prompt()
 
-    def handle(self, raw_text: str, result: IntentResult, session) -> EivrResponse:
+    def handle(self, raw_text: str, result: IntentResult, session) -> ChatAnswer:
         logger.debug(f"raw_text={raw_text}")
 
         # 初始化对话历史
@@ -152,4 +152,4 @@ class FillingHandlerAI(BaseHandler):
             session.filling_history = None
             session.filling_slots   = None
 
-        return EivrResponse(code=0, answer=answer)
+        return ChatAnswer(code=0, answer=answer)

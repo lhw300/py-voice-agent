@@ -1,0 +1,204 @@
+# search/search_service.py
+# Java: package com.lcallai;
+import logging
+import time
+from dataclasses import dataclass
+from typing import List, Optional
+
+import psycopg2
+from psycopg2 import pool
+
+from config.ai_config import AiConfig
+
+logger = logging.getLogger(__name__)
+
+# Java: private static HikariDataSource dataSource;
+_pool: Optional[pool.ThreadedConnectionPool] = None
+
+# Java: private static boolean isInitialized = false;
+_initialized: bool = False
+
+
+@dataclass
+class KnowledgeItem:
+    """
+    public static class KnowledgeItem {
+        public String category;
+        public String summary;
+        public String content;
+        public double distance;
+    }
+    """
+    category: str
+    summary:  str
+    content:  str
+    distance: float
+
+
+"""
+public static synchronized void init(String aiType) {
+    if (isInitialized) return;
+    HikariConfig config = new HikariConfig();
+    config.setJdbcUrl(AiConfig.getStringConfig("db.postgres.url", ...));
+    config.setUsername(AiConfig.getStringConfig("db.postgres.user", ...));
+    config.setPassword(AiConfig.getStringConfig("db.postgres.password", ...));
+    config.setMaximumPoolSize(AiConfig.getIntConfig("db.postgres.pool.max", 10));
+    dataSource = new HikariDataSource(config);
+    isInitialized = true;
+}
+"""
+def init() -> None:
+    global _pool, _initialized
+    if _initialized:
+        return
+
+    # Java: AiConfig.getStringConfig("db.postgres.url", "jdbc:postgresql://localhost:5432/postgres")
+    url      = AiConfig.getStringConfig("db.postgres.url",      "jdbc:postgresql://localhost:5432/postgres")
+    user     = AiConfig.getStringConfig("db.postgres.user",     "postgres")
+    password = AiConfig.getStringConfig("db.postgres.password", "call")
+    max_conn = AiConfig.getIntConfig("db.postgres.pool.max",    10)
+
+    # Convert Java jdbc URL to psycopg2 DSN
+    # jdbc:postgresql://host:port/dbname → host:port/dbname
+    dsn = url.replace("jdbc:postgresql://", "")
+    host_port, dbname = dsn.split("/", 1)
+    host, port = (host_port.split(":") + ["5432"])[:2]
+
+    _pool = pool.ThreadedConnectionPool(
+        minconn=1,
+        maxconn=max_conn,
+        host=host,
+        port=int(port),
+        dbname=dbname,
+        user=user,
+        password=password,
+    )
+    _initialized = True
+    logger.debug("✅ 已按需初始化 Postgres 连接池")
+
+
+"""
+public static List<KnowledgeItem> getRelevantKnowledge(
+        String tableName, String query, EmbeddingClient embedClient) throws Exception {
+
+    init(storage_type);
+
+    // Step 1: 向量化
+    long startEmbed = System.currentTimeMillis();
+    double[] vector = embedClient.embed(query);
+    logger.debug("Step 1: Embedding took: " + (System.currentTimeMillis() - startEmbed) + " ms");
+
+    // Step 2: 检索
+    long startSearch = System.currentTimeMillis();
+    List<KnowledgeItem> results = searchTopKnowledge(tableName, vector, 15);
+    logger.debug("Step 2: Search took: " + (System.currentTimeMillis() - startSearch) + " ms");
+
+    return results;
+}
+"""
+def getRelevantKnowledge(
+    table_name: str,
+    query: str,
+    embed_client,
+    category_filter: Optional[str] = None,
+    limit: int = 15,
+) -> List[KnowledgeItem]:
+    init()
+
+    # Java: Step 1 — 向量化
+    start_embed = time.time()
+    vector = embed_client.embed(query)
+    logger.debug("Step 1: Embedding took: " + str(int((time.time() - start_embed) * 1000)) + " ms")
+
+    # Java: Step 2 — pgvector 检索
+    start_search = time.time()
+    results = _searchTopKnowledge(table_name, vector, category_filter, limit)
+    logger.debug("Step 2: Search took: " + str(int((time.time() - start_search) * 1000)) + " ms")
+
+    return results
+
+
+"""
+private static List<KnowledgeItem> searchTopKnowledge(
+        String tableName, double[] vector, int limit) throws Exception {
+
+    String sql = "SELECT category, summary, content, (embedding <=> ?::vector) as distance " +
+                 "FROM " + tableName + " " +
+                 "WHERE is_active = true " +
+                 "ORDER BY distance ASC LIMIT ?";
+    ...
+    while (rs.next()) {
+        results.add(new KnowledgeItem(
+            rs.getString("category"),
+            rs.getString("summary"),
+            rs.getString("content"),
+            rs.getDouble("distance")
+        ));
+    }
+}
+
+Python adds optional category_filter for vector + field filter combination.
+"""
+def _searchTopKnowledge(
+    table_name: str,
+    vector: List[float],
+    category_filter: Optional[str],
+    limit: int,
+) -> List[KnowledgeItem]:
+    results = []
+
+    # Build vector string: [v1,v2,...] — same format as Java StringBuilder
+    vec_str = "[" + ",".join(str(v) for v in vector) + "]"
+
+    # Java: WHERE is_active = true
+    # Python: optionally add category filter (field filter not in Java version)
+    if category_filter:
+        sql = (
+            "SELECT category, summary, content, "
+            "(embedding <=> %s::vector) as distance "
+            "FROM " + table_name + " "
+            "WHERE is_active = true AND category = %s "
+            "ORDER BY distance ASC LIMIT %s"
+        )
+        params = (vec_str, category_filter, limit)
+    else:
+        sql = (
+            "SELECT category, summary, content, "
+            "(embedding <=> %s::vector) as distance "
+            "FROM " + table_name + " "
+            "WHERE is_active = true "
+            "ORDER BY distance ASC LIMIT %s"
+        )
+        params = (vec_str, limit)
+
+    conn = _pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+            for row in rows:
+                results.append(KnowledgeItem(
+                    category=row[0],
+                    summary=row[1],
+                    content=row[2],
+                    distance=float(row[3]),
+                ))
+    finally:
+        _pool.putconn(conn)
+
+    return results
+
+
+"""
+public static void shutdown() {
+    if (dataSource != null) dataSource.close();
+    logger.debug("🌙 资源已关闭");
+}
+"""
+def shutdown() -> None:
+    global _pool, _initialized
+    if _pool:
+        _pool.closeall()
+        _pool = None
+    _initialized = False
+    logger.debug("🌙 资源已关闭")

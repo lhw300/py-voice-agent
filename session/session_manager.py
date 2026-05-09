@@ -17,7 +17,10 @@ from typing import Dict, Optional
 # Java: import com.lcallai.intent.*;
 from openai import OpenAI              # Java: OkHttpClient — shared HTTP connection pool
 
-from ai_config          import AiConfig          # Java: import com.lcallai.AiConfig;
+import ai_config as AiConfig
+from session.model_router      import ModelRouter
+from search.rerank_client      import RerankClient
+from search.embedding_client   import EmbeddingClient
 from intent.intent_classifier  import IntentClassifier, SimpleIntentClassifier
 
 
@@ -52,6 +55,9 @@ class LlmClient:
 
     # Java: public String generate(String systemPrompt, String userPrompt)
     def generate(self, system_prompt: str, user_prompt: str) -> str:
+        logger.debug("generate send to AI url=" + str(self._client.base_url) + " model=" + self._model)
+        logger.debug("system_prompt=" + system_prompt[:80])
+        #logger.debug("user_prompt=" + user_prompt)
         resp = self._client.chat.completions.create(
             model=self._model,
             messages=[
@@ -63,6 +69,19 @@ class LlmClient:
             response_format={"type": "json_object"},
         )
         return resp.choices[0].message.content.strip()
+
+    def chat(self, messages: list) -> str:
+        logger.debug("chat send to AI url=" + str(self._client.base_url) + " model=" + self._model)
+        logger.debug("messages=\n" + str(messages))
+        resp = self._client.chat.completions.create(
+            model=self._model,
+            messages=messages,
+            temperature=0.7,
+            max_tokens=1024,
+        )
+        return resp.choices[0].message.content.strip()
+
+
 from intent.intent_dispatcher  import IntentDispatcher
 from intent.intent_result      import Intent
 from session.chat_session      import ChatSession
@@ -207,7 +226,7 @@ def init(config_dir: Optional[str] = None) -> None:
     AiConfig.init(_dir)
 
     # Java: String configType = AiConfig.getStringConfig("system.run.type", "hybrid2");
-    configType = AiConfig.getStringConfig("system.run.type", "hybrid2")
+    configType = AiConfig.getStringConfig("system.run.type", "hybrid")
 
     # Java: init(configType, configPath);
     _init_with_type(configType, _dir)
@@ -276,6 +295,7 @@ def _init_with_type(type_: str, config_dir: str) -> None:
     global configPath, G_QUERY_MODE, GLOBAL_QWEN_KEY
     global globalRewritePrompt, globalAskPrompt, globalRerankPrompt
     global globalFullText, globalChitchatPrompt, globalClassifyPrompt
+    global ACTIVE_ROUTER, ACTIVE_EMBED, ACTIVE_TABLE
     global ACTIVE_INTENT_CLASSIFIER, ACTIVE_INTENT_DISPATCHER, _initialized
 
     if _initialized:
@@ -283,103 +303,141 @@ def _init_with_type(type_: str, config_dir: str) -> None:
         return
 
     try:
-        # Java: logger.debug("📂 [System Init] 正在预加载全局配置文件和知识库...");
         logger.debug("📂 [System Init] 正在预加载全局配置文件和知识库...")
 
         # Java: SessionManager.configPath = configPath;
         configPath = config_dir
 
         # Java: AiConfig.init(configPath);
-        # (already called in init() above; called again here mirrors Java which calls it in both paths)
         AiConfig.init(config_dir)
 
         # Java: String base = configPath.replace("\\", "/");
         base = config_dir.replace("\\", "/")
 
-        # Java: String promptRewritePath = base + AiConfig.getStringConfig("path.prompt.rewrite", "/config/...");
-        promptRewritePath   = base + AiConfig.getStringConfig("path.prompt.rewrite",  "/config/prompt_rewritequery_v1_publish.txt")
-        promptAskPath       = base + AiConfig.getStringConfig("path.prompt.ask",      "/config/prompt_finalask_v1_publish.txt")
-        promptRerankPath    = base + AiConfig.getStringConfig("path.prompt.rerank",   "/config/prompt_rerank_v1_publish.txt")
-        knowledgePath       = base + AiConfig.getStringConfig("path.knowledge",       "/config/knowledge_full.txt")
-        globalChitchatPath  = base + AiConfig.getStringConfig("path.prompt.chitchat", "/config/chitchat_prompt.txt")
-        globalClassifyPath  = base + AiConfig.getStringConfig("path.prompt.classify", "/config/prompt_classify_v1.txt")
+        # Java: String promptRewritePath = base + AiConfig.getStringConfig(...)
+        promptRewritePath  = base + AiConfig.getStringConfig("path.prompt.rewrite",  "/config/prompt_rewritequery_v1_publish.txt")
+        promptAskPath      = base + AiConfig.getStringConfig("path.prompt.ask",      "/config/prompt_finalask_v1_publish.txt")
+        promptRerankPath   = base + AiConfig.getStringConfig("path.prompt.rerank",   "/config/prompt_rerank_v1_publish.txt")
+        knowledgePath      = base + AiConfig.getStringConfig("path.knowledge",       "/config/knowledge_full.txt")
+        globalChitchatPath = base + AiConfig.getStringConfig("path.prompt.chitchat", "/config/chitchat_prompt.txt")
+        globalClassifyPath = base + AiConfig.getStringConfig("path.prompt.classify", "/config/prompt_classify_v1.txt")
 
-        # Java: logger.debug("globalClassifyPromptPath " + globalClassifyPromptPath);
         logger.debug("globalClassifyPromptPath " + globalClassifyPath)
 
         # Java: G_QUERY_MODE = AiConfig.getStringConfig("rag.query.mode", "retrieveRerank");
         G_QUERY_MODE = AiConfig.getStringConfig("rag.query.mode", "retrieveRerank")
 
-        # Java: globalRewritePrompt = loadPromptFromFile(promptRewritePath, "");
         globalRewritePrompt  = _loadPromptFromFile(promptRewritePath, "")
-        # Java: globalAskPrompt     = loadPromptFromFile(promptAskPath, "");
         globalAskPrompt      = _loadPromptFromFile(promptAskPath, "")
-        # Java: globalRerankPrompt  = loadPromptFromFile(promptRerankPath, "");
         globalRerankPrompt   = _loadPromptFromFile(promptRerankPath, "")
-        # Java: globalFullText      = loadKnowledgeBase(knowledgePath);
         globalFullText       = _loadKnowledgeBase(knowledgePath)
-        # Java: globalChitchatPrompt = loadPromptFromFile(globalChitchatPromptPath, "你是一个专业且幽默的智能电话客服...");
         globalChitchatPrompt = _loadPromptFromFile(
             globalChitchatPath,
             "你是一个专业且幽默的智能电话客服。请简要回答用户的闲聊，并引导其咨询规定的业务。"
         )
-        # Java: globalClassifyPrompt = loadPromptFromFile(globalClassifyPromptPath, "");
         globalClassifyPrompt = _loadPromptFromFile(globalClassifyPath, "")
 
-        # Java: GLOBAL_QWEN_KEY = AiConfig.getStringConfig("api.key.qwen", System.getenv("QWEN_API_KEY"));
-        GLOBAL_QWEN_KEY = AiConfig.getStringConfig(
-            "api.key.qwen",
-            os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY") or ""
-        )
-        logger.debug("DEBUG: 读取到的 QWEN_API_KEY 长度 = " +
-                     (str(len(GLOBAL_QWEN_KEY)) if GLOBAL_QWEN_KEY else "null"))
-
-        # ── LLM client assembly ──────────────────────────────────────────────
-        # Java: if (type.equalsIgnoreCase("qwen")) { ... }
-        # Java: else if (type.equalsIgnoreCase("ollama")) { ... }
+        # ── LLM client assembly — 4 types ────────────────────────────────────
+        # Java: if (type.equalsIgnoreCase("qwen"))   { ... }
         # Java: else if (type.equalsIgnoreCase("hybrid")) { ... }
+        # Java: else if (type.equalsIgnoreCase("openai")) { ... }
+        # Java: else if (type.equalsIgnoreCase("simple")) { ... }
         # Java: else { throw new IllegalArgumentException("不支持的大模型类型: " + type); }
-        #
-        # Java: SessionManager constructs a single shared OkHttpClient (connection pool)
-        # Java: then wraps it into OllamaClient / OpenAIClient (LlmClient implementations).
-        # Java: ACTIVE_ROUTER.rewriter() returns the turbo-level LlmClient used for classification.
-        #
-        # Python equivalent: build one shared OpenAI client here (mirrors the connection pool),
-        # then pass it into IntentClassifier — same injection pattern as Java.
-        if not GLOBAL_QWEN_KEY:
-            raise RuntimeError("❌ 错误：DASHSCOPE_API_KEY 未设置！")
 
-        # Java: OllamaClient turboClient = new OllamaClient(aliyunBaseUrl, "qwen-turbo",
-        # Java:         "text-embedding-v3", CLIENT, GLOBAL_QWEN_KEY);
-        # Java: ACTIVE_ROUTER = new ModelRouter(turboClient, djlLocalClient, plusClient);
-        # Java: ACTIVE_ROUTER.rewriter() returns turboClient — used for classification.
         ALIYUN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        OPENAI_BASE_URL = "https://api.openai.com/v1"
 
-        # shared OpenAI HTTP client — mirrors Java's single static OkHttpClient CLIENT
-        _openai_client = OpenAI(api_key=GLOBAL_QWEN_KEY, base_url=ALIYUN_BASE_URL)
+        if type_.lower() == "qwen":
+            # Full cloud — Alibaba DashScope
+            # rewriter: qwen-turbo  finalLlm: qwen-plus  rerank: qwen-turbo(LLM)  embed: cloud
+            GLOBAL_QWEN_KEY = AiConfig.getStringConfig(
+                "api.key.qwen", os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY") or ""
+            )
+            if not GLOBAL_QWEN_KEY:
+                raise RuntimeError("❌ type=qwen 但未设置 api.key.qwen / DASHSCOPE_API_KEY")
+            logger.debug("DEBUG: 读取到的 QWEN_API_KEY 长度 = " + str(len(GLOBAL_QWEN_KEY)))
 
-        # Java: new OllamaClient(aliyunBaseUrl, "qwen-turbo", ..., CLIENT, GLOBAL_QWEN_KEY)
-        # model name is fixed here, inside the client — IntentClassifier never sees it
-        turboClient = LlmClient(_openai_client, model="qwen-turbo")
+            _client     = OpenAI(api_key=GLOBAL_QWEN_KEY, base_url=ALIYUN_BASE_URL)
+            turboClient = LlmClient(_client, model="qwen-plus")
+            plusClient  = LlmClient(_client, model="qwen-plus")
+
+            # rerank: LLM-based (turboClient), no local CrossEncoder
+            ACTIVE_ROUTER = ModelRouter(turboClient, turboClient, plusClient)
+            ACTIVE_EMBED  = None   # cloud embed via DashScope — RAG to be wired via SearchService
+            ACTIVE_TABLE  = AiConfig.getStringConfig("db.postgres.table.online", "enterprise_knowledge_qwen_1024")
+
+        elif type_.lower() == "hybrid":
+            # Cloud LLM + local rerank/embed (recommended for production)
+            # rewriter: qwen-turbo  finalLlm: qwen-plus  rerank: local CrossEncoder  embed: local ST
+            GLOBAL_QWEN_KEY = AiConfig.getStringConfig(
+                "api.key.qwen", os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY") or ""
+            )
+            if not GLOBAL_QWEN_KEY:
+                raise RuntimeError("❌ type=hybrid 但未设置 api.key.qwen / DASHSCOPE_API_KEY")
+            logger.debug("DEBUG: 读取到的 QWEN_API_KEY 长度 = " + str(len(GLOBAL_QWEN_KEY)))
+
+            _client     = OpenAI(api_key=GLOBAL_QWEN_KEY, base_url=ALIYUN_BASE_URL)
+            turboClient = LlmClient(_client, model="qwen-turbo")
+            plusClient  = LlmClient(_client, model="qwen-plus")
+
+            # Java: DJLLocalClient reranker = new DJLLocalClient();
+            rerank_name = AiConfig.getStringConfig("djl.model.rerank.name", "bge-reranker-v2-m3")
+            rerank_path = base.rstrip("/") + "/" + rerank_name
+            reranker    = RerankClient(rerank_path)
+
+            ACTIVE_ROUTER = ModelRouter(turboClient, reranker, plusClient)
+
+            # Java: ACTIVE_EMBED = new DJLLocalClient(); (local sentence-transformers)
+            embed_name  = AiConfig.getStringConfig("djl.model.embed.name", "text2vec-base-chinese-paraphrase-pt")
+            embed_path  = base.rstrip("/") + "/" + embed_name
+            ACTIVE_EMBED = EmbeddingClient(embed_path)
+            ACTIVE_TABLE = AiConfig.getStringConfig(
+                "db.postgres.table.online",
+                "enterprise_knowledge_" + ("768" if ACTIVE_EMBED.getDimension() == 768 else "qwen_1024")
+            )
+
+        elif type_.lower() == "openai":
+            # Full cloud — OpenAI
+            # rewriter: gpt-4o-mini  finalLlm: gpt-4o  rerank: gpt-4o-mini(LLM)  embed: text-embedding-3-small
+            openai_key = AiConfig.getStringConfig(
+                "api.key.openai", os.environ.get("OPENAI_API_KEY") or ""
+            )
+            if not openai_key:
+                raise RuntimeError("❌ type=openai 但未设置 api.key.openai / OPENAI_API_KEY")
+
+            _client    = OpenAI(api_key=openai_key, base_url=OPENAI_BASE_URL)
+            miniClient = LlmClient(_client, model="gpt-4o-mini")
+            gpt4oClient= LlmClient(_client, model="gpt-4o")
+
+            # rerank: LLM-based (miniClient), no local CrossEncoder
+            ACTIVE_ROUTER = ModelRouter(miniClient, miniClient, gpt4oClient)
+            ACTIVE_EMBED  = None   # cloud embed — text-embedding-3-small (1536-dim)
+            ACTIVE_TABLE  = AiConfig.getStringConfig("db.postgres.table.online", "enterprise_knowledge_openai_1536")
+
+        elif type_.lower() == "simple":
+            # No LLM — all input treated as QUERY, used for slot-filling / debug
+            ACTIVE_ROUTER = None
+            ACTIVE_EMBED  = None
+            ACTIVE_TABLE  = None
+            logger.debug("✅ [System Init] type=simple — LLM skipped")
+
+        else:
+            raise ValueError("不支持的大模型类型: " + type_ + "  支持: qwen / hybrid / openai / simple")
 
         logger.debug("✅ [System Init] 全局资源加载完成。type=" + type_)
 
         # ── Intent classifier assembly ────────────────────────────────────────
-        # Java: IntentClassifier intentClassifier;
         # Java: if ("simple".equalsIgnoreCase(G_QUERY_MODE)) {
         # Java:     intentClassifier = new SimpleIntentClassifier();
-        # Java:     logger.debug("SimpleIntentClassifier activated — all input treated as QUERY");
         # Java: } else {
         # Java:     intentClassifier = new IntentClassifier(ACTIVE_ROUTER.rewriter(), globalClassifyPrompt);
         # Java: }
-        # Java: ACTIVE_INTENT_CLASSIFIER = intentClassifier;
-        if G_QUERY_MODE.lower() == "simple":
+        if type_.lower() == "simple" or G_QUERY_MODE.lower() == "simple":
             ACTIVE_INTENT_CLASSIFIER = SimpleIntentClassifier()
             logger.debug("SimpleIntentClassifier activated — all input treated as QUERY")
         else:
             # Java: new IntentClassifier(ACTIVE_ROUTER.rewriter(), globalClassifyPrompt)
-            # turboClient injected from outside — same pattern as Java
-            ACTIVE_INTENT_CLASSIFIER = IntentClassifier(turboClient, system_prompt=globalClassifyPrompt)
+            ACTIVE_INTENT_CLASSIFIER = IntentClassifier(ACTIVE_ROUTER.rewriter(), system_prompt=globalClassifyPrompt)
 
         # ── IntentDispatcher assembly ─────────────────────────────────────────
         # Java: IntentDispatcher intentDispatcher = new IntentDispatcher()
@@ -390,15 +448,14 @@ def _init_with_type(type_: str, config_dir: str) -> None:
         # Java:         .register(IntentResult.Intent.INFORM,   new InformHandler())
         # Java:         .register(IntentResult.Intent.GREETING, new GreetingHandler())
         # Java:         .register(IntentResult.Intent.CHITCHAT, new ChitchatHandler(globalChitchatPrompt));
-        # Java: ACTIVE_INTENT_DISPATCHER = intentDispatcher;
         intentDispatcher = IntentDispatcher()
         intentDispatcher.register(Intent.QUERY,    QueryHandler())
-        intentDispatcher.register(Intent.FEEDBACK, FeedbackHandler()  if FeedbackHandler  else QueryHandler())
-        intentDispatcher.register(Intent.COMMAND,  CommandHandler()   if CommandHandler   else QueryHandler())
-        intentDispatcher.register(Intent.ACK,      AckHandler()       if AckHandler       else QueryHandler())
-        intentDispatcher.register(Intent.INFORM,   InformHandler()    if InformHandler    else FillingHandler())
+        intentDispatcher.register(Intent.FEEDBACK, FeedbackHandler())
+        intentDispatcher.register(Intent.COMMAND,  CommandHandler())
+        intentDispatcher.register(Intent.ACK,      AckHandler())
+        intentDispatcher.register(Intent.INFORM,   InformHandler())
         intentDispatcher.register(Intent.GREETING, GreetingHandler())
-        intentDispatcher.register(Intent.CHITCHAT, ChitchatHandler()  if ChitchatHandler  else QueryHandler())
+        intentDispatcher.register(Intent.CHITCHAT, ChitchatHandler(globalChitchatPrompt))
         ACTIVE_INTENT_DISPATCHER = intentDispatcher
 
         # Java: startAutoCleanup();
@@ -406,12 +463,9 @@ def _init_with_type(type_: str, config_dir: str) -> None:
 
         _initialized = True
 
-    # Java: } catch (Exception e) {
     except Exception as e:
-        # Java: logger.error("❌ [System Init] 初始化失败！");
         logger.error("❌ [System Init] 初始化失败！")
         logger.error("", exc_info=True)
-        # Java: throw new RuntimeException("SessionManager 初始化失败", e);
         raise RuntimeError("SessionManager 初始化失败") from e
 
 
@@ -456,6 +510,37 @@ def get_session(session_id: str) -> ChatSession:
             # Java: session.setSessionId(clientId);
             # (session_id already stored in constructor)
 
+            # Java: session.setThresholds(G_SIMILARITY, G_TRUST, G_COMP_EMBED, G_COMP_RERANK);
+            session.setThresholds(G_SIMILARITY, G_TRUST, G_COMP_EMBED, G_COMP_RERANK)
+
+            # Java: session.setAdvancedThresholds(G_RERANK_TRIGGER_MAX, G_RESCUE_SCORE);
+            session.setAdvancedThresholds(G_RERANK_TRIGGER_MAX, G_RESCUE_SCORE)
+
+            # Java: session.setTopK(G_MAX_RERANK, G_FINAL_LIMIT, G_RERANK_TIMEOUT);
+            session.setTopK(G_MAX_RERANK, G_FINAL_LIMIT, G_RERANK_TIMEOUT)
+
+            # Java: session.setFulltext(globalFullText);
+            session.setFulltext(globalFullText)
+
+            # Java: session.setRewrite_prompt(globalRewritePrompt);
+            session.setRewrite_prompt(globalRewritePrompt)
+
+            # Java: session.setAsk_prompt(globalAskPrompt);
+            session.setAsk_prompt(globalAskPrompt)
+
+            # Java: session.setRerankSys_prompt(globalRerankPrompt);
+            session.setRerankSys_prompt(globalRerankPrompt)
+            if ACTIVE_ROUTER:
+                ACTIVE_ROUTER.setRerankPrompt(globalRerankPrompt)
+
+            # Java: session.setQueryMode(G_QUERY_MODE);
+            session.setQueryMode(G_QUERY_MODE)
+
+            # Java: inject router and embed into session
+            session.router          = ACTIVE_ROUTER
+            session.embeddingClient = ACTIVE_EMBED
+            session.tableName       = ACTIVE_TABLE
+
             # Java: session.setIntentPipeline(ACTIVE_INTENT_CLASSIFIER, ACTIVE_INTENT_DISPATCHER);
             session.set_intent_pipeline(ACTIVE_INTENT_CLASSIFIER, ACTIVE_INTENT_DISPATCHER)
 
@@ -463,9 +548,7 @@ def get_session(session_id: str) -> ChatSession:
             sessions[session_id] = session
 
             # Java: logger.debug("为客户端 [ sn=" + clientId + "] 创建了新会话...");
-            logger.debug(
-                f"为客户端 [ sn={session_id}] 创建了新会话，并已注入全局 Prompt 和知识库引用。"
-            )
+            logger.debug("为客户端 [ sn=" + session_id + "] 创建了新会话，并已注入全局 Prompt 和知识库引用。")
 
         # Java: lastActiveTime.put(clientId, System.currentTimeMillis());
         lastActiveTime[session_id] = time.time()

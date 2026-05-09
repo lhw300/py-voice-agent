@@ -1,9 +1,9 @@
 # handler/filling_handler.py
 import logging
-from handler.base_handler import BaseHandler
+from intent.intent_handler import IntentHandler
 from handler.slot_validator import validate_slot
 from intent.intent_result import IntentResult
-from models import EivrResponse
+from models import ChatAnswer
 
 logger = logging.getLogger(__name__)
 
@@ -44,19 +44,19 @@ def confirm_text(key, value):
     if key == "address":
         return f"您的地址是{value}，对吗？"
 
-def _build_complete_response(session) -> EivrResponse:  # ← 类外面
+def _build_complete_response(session) -> ChatAnswer:  # ← 类外面
     name    = session.slots["name"]
     phone   = session.slots["phone"]
     address = session.slots["address"]
     session.slots        = None
     session.pending_slot = None
     session.confirming   = None
-    return EivrResponse(code=0, answer=f"好的{name}，您的报修已登记。联系电话{phone}，地址{address}，我们会尽快安排工程师上门处理。")
+    return ChatAnswer(code=0, answer=f"好的{name}，您的报修已登记。联系电话{phone}，地址{address}，我们会尽快安排工程师上门处理。")
 
 
-class FillingHandler(BaseHandler):
+class FillingHandler(IntentHandler):
 
-    def handle(self, raw_text: str, result: IntentResult, session) -> EivrResponse:
+    def handle(self, raw_text: str, result: IntentResult, session) -> ChatAnswer:
         logger.debug(f"raw_text={raw_text}")
 
         # 初始化槽位（第一次进入）
@@ -64,7 +64,7 @@ class FillingHandler(BaseHandler):
             session.slots        = {key: None for key, _ in SLOTS}
             session.pending_slot = "name"
             session.confirming   = False
-            return EivrResponse(code=0, answer="您好，请问您的姓名？")
+            return ChatAnswer(code=0, answer="您好，请问您的姓名？")
 
         # ── 正在等待用户确认 ──────────────────────────────────────
         logger.debug(f"session.confirming={session.confirming}")
@@ -77,16 +77,16 @@ class FillingHandler(BaseHandler):
                 for k, question in SLOTS:          # ← 缩进在if is_yes里面
                     if session.slots[k] is None:
                         session.pending_slot = k
-                        return EivrResponse(code=0, answer=question)
+                        return ChatAnswer(code=0, answer=question)
                 return _build_complete_response(session)
 
             elif is_no(raw_text):
                 session.slots[key] = None
                 session.confirming = False
-                return EivrResponse(code=0, answer=RE_ASK[key])
+                return ChatAnswer(code=0, answer=RE_ASK[key])
 
             else:
-                return EivrResponse(code=0, answer=f'请回答"对"或"不对"，{confirm_text(key, session.slots[key])}')
+                return ChatAnswer(code=0, answer=f'请回答"对"或"不对"，{confirm_text(key, session.slots[key])}')
 
         # ── 把用户刚说的话填入待填槽位 ────────────────────────────
         logger.debug(f"session.pending_slot={session.pending_slot}")
@@ -95,14 +95,14 @@ class FillingHandler(BaseHandler):
 
             ok, error_msg = validate_slot(key, raw_text)
             if not ok:
-                return EivrResponse(code=0, answer=error_msg)
+                return ChatAnswer(code=0, answer=error_msg)
 
             session.slots[key] = raw_text
             logger.debug(f"填入槽位 {key}={raw_text}")
 
             if key in NEED_CONFIRM:
                 session.confirming = True
-                return EivrResponse(code=0, answer=confirm_text(key, raw_text))
+                return ChatAnswer(code=0, answer=confirm_text(key, raw_text))
 
             session.pending_slot = None
 
@@ -111,7 +111,7 @@ class FillingHandler(BaseHandler):
             if session.slots[key] is None:
                 session.pending_slot = key
                 logger.debug(f"set session.pending_slot={key} answer={question}")
-                return EivrResponse(code=0, answer=question)
+                return ChatAnswer(code=0, answer=question)
 
         # ── 所有槽位已填满，完成报修 ──────────────────────────────
         return _build_complete_response(session)

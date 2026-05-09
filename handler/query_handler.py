@@ -1,20 +1,34 @@
 # handler/query_handler.py
+# Java: package com.lcallai.handler;
 import logging
-from handler.base_handler import BaseHandler
+
+from intent.intent_handler import IntentHandler
 from intent.intent_result import IntentResult
-from models import EivrResponse
+from models import ChatAnswer
 
 logger = logging.getLogger(__name__)
 
 
-class QueryHandler(BaseHandler):
+class QueryHandler(IntentHandler):
+    """
+    public ChatAnswer handle(String rawText, IntentResult result, ChatSession session) {
+        logger.debug("[QueryHandler] refinedQuery=" + result.refinedQuery);
+        if (!"simple".equalsIgnoreCase(session.getQueryMode())) {
+            if (session.getCurrentCategory() == null) {
+                return new ChatAnswer(0, "请问您是老师、学生还是管理员呢？", result);
+            }
+        }
+        return session.askByQueryMode(result.refinedQuery, false);
+    }
+    """
+    def handle(self, raw_text: str, result: IntentResult, session) -> ChatAnswer:
+        logger.debug("[QueryHandler] refinedQuery=" + str(result.refined_query))
 
-    def handle(self, raw_text: str, result: IntentResult, session) -> EivrResponse:
-        logger.debug(f"refined_query={result.refined_query}")
+        # Java: if (!"simple".equalsIgnoreCase(session.getQueryMode()))
+        if not "simple".lower() == (session.getQueryMode() or "").lower():
+            # Java: if (session.getCurrentCategory() == null)
+            if session.getCurrentCategory() is None:
+                return ChatAnswer(code=0, answer="请问您是老师、学生还是管理员呢？")
 
-        # 身份未知，先反问
-        if session.current_category is None:
-            return EivrResponse(code=0, answer="请问您是宽带用户还是企业客户？")
-
-        # TODO: 接入RAG检索
-        return session.ask_by_rag(result.refined_query)
+        # Java: return session.askByQueryMode(result.refinedQuery, false);
+        return session.askByQueryMode(result.refined_query, False)

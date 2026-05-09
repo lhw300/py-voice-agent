@@ -3,3 +3,6 @@ uvicorn
 pydantic
 openai
 requests
+sentence-transformers
+psycopg2-binary
+openpyxl

@@ -1,19 +1,29 @@
+# intent/intent_result.py
+# Java: package com.lcallai.intent;
+from dataclasses import dataclass, field
 from enum import Enum
-from dataclasses import dataclass
 from typing import Optional
 
 
 class Intent(Enum):
-    QUERY    = "QUERY"     # 寻求答案，触发RAG检索
-    COMMAND  = "COMMAND"   # 系统指令，触发action_code执行
-    INFORM   = "INFORM"    # 陈述背景信息，存入上下文
-    FEEDBACK = "FEEDBACK"  # 情感评价
-    ACK      = "ACK"       # 确认/接收
-    GREETING = "GREETING"  # 问候或告别
-    CHITCHAT = "CHITCHAT"  # 闲聊
+    """
+    public enum Intent {
+        QUERY, COMMAND, INFORM, FEEDBACK, ACK, GREETING, CHITCHAT
+    }
+    """
+    QUERY    = "QUERY"
+    COMMAND  = "COMMAND"
+    INFORM   = "INFORM"
+    FEEDBACK = "FEEDBACK"
+    ACK      = "ACK"
+    GREETING = "GREETING"
+    CHITCHAT = "CHITCHAT"
 
 
 class Sentiment(Enum):
+    """
+    public enum Sentiment { POSITIVE, NEGATIVE, NEUTRAL }
+    """
     POSITIVE = "POSITIVE"
     NEGATIVE = "NEGATIVE"
     NEUTRAL  = "NEUTRAL"
@@ -21,18 +31,36 @@ class Sentiment(Enum):
 
 @dataclass
 class IntentResult:
+    """
+    public class IntentResult {
+        public final Intent    intent;
+        public final String    subIntent;
+        public final Sentiment sentiment;
+        public final String    refinedQuery;
+        public final String    actionCode;
+        public final String    category;
+    }
+    """
     intent:        Intent
-    refined_query: Optional[str]  = None   # QUERY时：补全后的疑问句
-    sub_intent:    Optional[str]  = None   # ACK子类型：affirm/negate/ack
-    sentiment:     Sentiment      = Sentiment.NEUTRAL
-    action_code:   Optional[str]  = None   # COMMAND时：动作码
-    category:      Optional[str]  = None   # 用户身份
+    refined_query: Optional[str]       = None        # Java: refinedQuery
+    sub_intent:    Optional[str]       = None        # Java: subIntent
+    sentiment:     Sentiment           = Sentiment.NEUTRAL
+    action_code:   Optional[str]       = None        # Java: actionCode
+    category:      Optional[str]       = None
 
     def is_question(self) -> bool:
+        # Java: public boolean isQuestion() { return intent == Intent.QUERY; }
         return self.intent == Intent.QUERY
 
-    def __str__(self):
-        return (f"IntentResult(intent={self.intent.value}, "
-                f"refined_query={self.refined_query}, "
-                f"category={self.category}, "
-                f"action_code={self.action_code})")
+    def __str__(self) -> str:
+        # Java: public String toString() { return "IntentResult{intent=..." }
+        return (
+            "IntentResult{"
+            "intent=" + self.intent.value +
+            ", subIntent='" + str(self.sub_intent) + "'"
+            ", sentiment=" + self.sentiment.value +
+            ", refinedQuery='" + str(self.refined_query) + "'"
+            ", actionCode='" + str(self.action_code) + "'"
+            ", category='" + str(self.category) + "'"
+            "}"
+        )

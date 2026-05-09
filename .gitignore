@@ -1,0 +1,27 @@
+# 1. 忽略所有文件和文件夹
+*
+
+# 2. 允许目录结构
+!*/
+
+# 3. 白名单
+!*.java
+!*.py
+!*.xml
+
+!README.md
+!README_EN.md
+!.gitignore
+!aiknowledge.txt
+!*.txt
+
+# 4. CI 相关
+!.github/
+!.github/workflows/*.yml
+!ci-config-template/
+!ci-config-template/**.idea
+
+git-command.txt
+maven-linux命令.txt
+ollama.txt
+postgres.txt
