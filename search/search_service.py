@@ -8,7 +8,7 @@ from typing import List, Optional
 import psycopg2
 from psycopg2 import pool
 
-from config.ai_config import AiConfig
+import  ai_config as AiConfig
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +112,7 @@ def getRelevantKnowledge(
 
     # Java: Step 2 — pgvector 检索
     start_search = time.time()
+
     results = _searchTopKnowledge(table_name, vector, category_filter, limit)
     logger.debug("Step 2: Search took: " + str(int((time.time() - start_search) * 1000)) + " ms")
 
@@ -148,6 +149,12 @@ def _searchTopKnowledge(
     results = []
 
     # Build vector string: [v1,v2,...] — same format as Java StringBuilder
+    # 例如，PostgreSQL 认识的向量长这样：
+    # '[0.1, 0.2, 0.3, 0.4]'::vector
+    #
+    # 但是，你在 Python 中持有的原始数据（vector 变量）是一个普通的 Python 列表对象：
+    # [0.1, 0.2, 0.3, 0.4] （这是一个内存中的对象，而不是字符串）。
+
     vec_str = "[" + ",".join(str(v) for v in vector) + "]"
 
     # Java: WHERE is_active = true
@@ -170,7 +177,7 @@ def _searchTopKnowledge(
             "ORDER BY distance ASC LIMIT %s"
         )
         params = (vec_str, limit)
-
+    logger.debug(" sql="+sql)
     conn = _pool.getconn()
     try:
         with conn.cursor() as cur:
@@ -202,3 +209,49 @@ def shutdown() -> None:
         _pool = None
     _initialized = False
     logger.debug("🌙 资源已关闭")
+
+# ── Test entry point ──────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    logging.basicConfig(
+        format="%(levelname)s: %(asctime)s %(name)s:%(lineno)s %(message)s",
+        level=logging.DEBUG, stream=sys.stdout, force=True
+    )
+
+    config_path = sys.argv[1] if len(sys.argv) > 1 else "e:/ai"
+
+    import ai_config as AiConfig
+    AiConfig.init(config_path)
+
+    from search.embedding_client import EmbeddingClient
+    embed_name = AiConfig.getStringConfig("djl.model.embed.name", "text2vec-base-chinese-paraphrase-pt")
+    embed_path = config_path.replace("\\", "/") + "/" + embed_name
+    embed_client = EmbeddingClient(embed_path)
+
+    table_name = AiConfig.getStringConfig("db.postgres.table.online", "enterprise_knowledge_768")
+
+    # ── Test cases ────────────────────────────────────────────────────────────
+    tests = [
+        ("老师初始密码是多少",    "老师"),
+        ("学生忘记密码怎么办",    "学生"),
+        ("怎么参加省市级培训",    None),
+        ("Win10能安装吗",         "老师"),
+    ]
+
+    for query, category in tests:
+        logger.debug("=" * 50)
+        logger.debug("query=" + query + "  category=" + str(category))
+        items = getRelevantKnowledge(table_name, query, embed_client,
+                                     category_filter=category, limit=5)
+        if not items:
+            logger.debug("❌ 无结果")
+        for i, item in enumerate(items):
+            logger.debug(
+                f"  [{i+1}] dist={KnowledgeItem.__dataclass_fields__ and item.distance:.3f}"
+                f"  category={item.category}  summary={item.summary}"
+            )
+
+    shutdown()
+    logger.debug("✅ 测试完成")

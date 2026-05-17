@@ -27,7 +27,7 @@ class EmbeddingClient:
         from sentence_transformers import SentenceTransformer
         logger.debug("⏳ 正在加载 Embedding 模型: " + model_path)
         self._model = SentenceTransformer(model_path)
-        self._dimension = self._model.get_sentence_embedding_dimension()
+        self._dimension = len(self._model.encode("test"))
         logger.debug("✅ Embedding 模型加载完成，维度: " + str(self._dimension))
 
     """

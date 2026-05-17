@@ -596,9 +596,119 @@ class ChatSession:
      */
     """
     def _performTwoStageRetrievalAsync(self, query: str) -> List[dict]:
-        # TODO: wire to SearchService (pgvector / Lucene)
-        logger.debug(self.sinfo + "_performTwoStageRetrievalAsync stub query=" + query)
-        return []
+        from search.search_service import getRelevantKnowledge, KnowledgeItem
+        from concurrent.futures import as_completed
+        import time as _time
+
+        queryStart = _time.time()
+
+        # Java: List<KnowledgeItem> allCandidates = SearchService.getRelevantKnowledge(...)
+        allCandidates = getRelevantKnowledge(
+            self.tableName, query, self.embeddingClient,
+            category_filter=self.currentCategory
+        )
+
+        if not allCandidates:
+            return []
+
+        logger.debug(self.sinfo + "🔍 检索到的候选列表getRelevantKnowledge: 粗排耗时="
+                     + str(int((_time.time() - queryStart) * 1000)) + " ms")
+        for item in allCandidates:
+            logger.debug(self.sinfo + "距离: " + self.formatDouble(item.distance)
+                         + " 分类: " + str(item.category) + " | 摘要: " + str(item.summary))
+
+        # Java: if ("retrieveOnly".equalsIgnoreCase(queryMode)) return subList(0, 3);
+        if self.queryMode and self.queryMode.lower() == "retrieveonly":
+            logger.debug(self.sinfo + "⚠️ 混合模式性能优化：跳过精排，直接返回粗排结果。")
+            return [self._item_to_dict(i) for i in allCandidates[:3]]
+
+        # Java: List<KnowledgeItem> fastTrackItems = new ArrayList<>();
+        # Java: List<KnowledgeItem> slowPool = new ArrayList<>();
+        fastTrackItems = []
+        slowPool       = []
+
+        # Java: for (KnowledgeItem item : allCandidates) { if (distance < trustThreshold) ... }
+        for item in allCandidates:
+            if item.distance < self.trustThreshold:  #0.25
+                # Java: 🚀 [绝对信任] 直接命中，跳过精排
+                logger.debug(self.sinfo + "绝对信任 直接命中 距离: "
+                             + self.formatDouble(item.distance) + " | 摘要: " + str(item.summary))
+                fastTrackItems.append(item)
+            elif item.distance < self.rerankTriggerMax: #0.6
+                # Java: 🔍 [待定筛选] 送去精排
+                slowPool.append(item)
+
+        # Java: if (fastTrackItems.size() >= 1) return fastTrackItems.subList(0, 3);
+        if len(fastTrackItems) >= 1:
+            logger.debug(self.sinfo + "🚀 [性能熔断] 命中上帝视角条目，直接返回，彻底跳过精排任务。")
+            return [self._item_to_dict(i) for i in fastTrackItems[:3]]
+
+        # Java: if (slowPool.isEmpty()) return fastTrackItems;
+        if not slowPool:
+            logger.debug(self.sinfo + "没有候选需要精排，直接返回已有的 跳过精排任务。")
+            return [self._item_to_dict(i) for i in fastTrackItems]
+
+        # Java: needRerankItems = slowPool.stream().limit(maxRerankCandidates).toList();
+        needRerankItems = slowPool[:self.maxRerankCandidates] #5
+
+        logger.debug(self.sinfo + "🎯 启动并行精排，样本数: " + str(len(needRerankItems)))
+        rerankStart = _time.time()
+
+        # Java: CompletableFuture.runAsync(() -> { calculateSemanticDistance(...) }, rerankExecutor)
+        futures = {}
+        for item in needRerankItems:
+            original_dist = item.distance
+            fut = _rerank_executor.submit(
+                self._rerank_item, query, item, original_dist
+            )
+            futures[fut] = item
+
+        # Java: CompletableFuture.allOf(...).get(5, TimeUnit.SECONDS)
+        try:
+            for fut in as_completed(futures, timeout=self.rerankTimeoutSeconds):
+                item        = futures[fut]
+                original_dist = item.distance
+                try:
+                    rerank_dist = fut.result()
+                    # Java: if (originalDist < compensateEmbedMax && rerankDist > compensateRerankMin)
+                    if original_dist < self.compensateEmbedMax and rerank_dist > self.compensateRerankMin:
+                        logger.debug(self.sinfo + "💡 [命中补偿] 摘要: " + str(item.summary)
+                                     + " 粗排距离 " + str(original_dist) + " 极优，强制修正精排分。")
+                        item.distance = self.rescueScore
+                    else:
+                        item.distance = rerank_dist
+                except Exception as e:
+                    logger.debug(self.sinfo + "精排单项异常: " + str(e))
+        except Exception:
+            logger.error("⚠️ 部分精排任务超时，执行现有结果排序。")
+
+        # Java: finalResults.addAll(fastTrackItems); finalResults.addAll(needRerankItems);
+        finalResults = fastTrackItems + needRerankItems
+
+        # Java: finalResults.sort(Comparator.comparingDouble(a -> a.distance));
+        finalResults.sort(key=lambda x: x.distance)
+
+        logger.debug(self.sinfo + " rerank检索全链路耗时: "
+                     + str(int((_time.time() - rerankStart) * 1000)) + " ms")
+
+        # Java: return finalResults.subList(0, Math.min(finalContextLimit, finalResults.size()));
+        return [self._item_to_dict(i) for i in finalResults[:self.finalContextLimit]]
+
+    def _rerank_item(self, query: str, item, original_dist: float) -> float:
+        """Worker submitted to thread pool — mirrors Java CompletableFuture.runAsync lambda."""
+        return self._calculateSemanticDistance(
+            query, item.category or "", item.summary or "", item.content or ""
+        )
+
+    @staticmethod
+    def _item_to_dict(item) -> dict:
+        """Convert KnowledgeItem dataclass to dict for uniform downstream handling."""
+        return {
+            "category": item.category,
+            "summary":  item.summary,
+            "content":  item.content,
+            "distance": item.distance,
+        }
 
     """
     /*

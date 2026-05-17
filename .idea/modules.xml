@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/../asrtts/asrtts.iml" filepath="$PROJECT_DIR$/../asrtts/asrtts.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../py/py.iml" filepath="$PROJECT_DIR$/../py/py.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/py-LLM-integration.iml" filepath="$PROJECT_DIR$/.idea/py-LLM-integration.iml" />
+    </modules>
+  </component>
+</project>

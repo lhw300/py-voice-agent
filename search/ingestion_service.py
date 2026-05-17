@@ -10,7 +10,7 @@ from typing import List, Optional
 
 import psycopg2
 
-from config.ai_config import AiConfig
+import ai_config as AiConfig
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +64,8 @@ def run(base_dir: str) -> None:
     raw_file_path = AiConfig.getStringConfig("path.knowledge", "config/publishknowledge.txt")
 
     # Java: String filePath = Paths.get(baseDir, rawFilePath).toString();
-    file_path = str(Path(base_dir) / raw_file_path)
 
+    file_path = str(Path(base_dir) / raw_file_path.lstrip("/"))
     # DB connection params from AiConfig
     db_url  = AiConfig.getStringConfig("db.postgres.url",      "jdbc:postgresql://localhost:5432/postgres")
     db_user = AiConfig.getStringConfig("db.postgres.user",     "postgres")
@@ -79,9 +79,15 @@ def run(base_dir: str) -> None:
 
     # Java: tableName = "enterprise_knowledge_" + (dim == 768 ? "768" : "qwen_1024");
     dim        = embed_client.getDimension()
-    table_name = "enterprise_knowledge_" + ("768" if dim == 768 else "qwen_1024")
-    logger.debug("🚀 模式: " + storage_type + " | 维度: " + str(dim) + " | 表名: " + table_name)
 
+    def _dim_suffix(dim: int) -> str:
+        return {512: "512", 768: "768", 1024: "1024"}.get(dim, str(dim))
+
+    table_name = "enterprise_knowledge_" + _dim_suffix(dim)
+
+    logger.debug("🚀 模式: " + storage_type + " | 维度: " + str(dim) + " | 表名: " + table_name)
+    # ← 加这一行，导入前先清空
+    clearDatabase(table_name, db_url, db_user, db_pass)
     # Java: 根据后缀名选择读取办法
     if file_path.lower().endswith(".txt"):
         entries = _readFromTxt(file_path)

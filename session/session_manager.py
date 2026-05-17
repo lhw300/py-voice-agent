@@ -23,6 +23,7 @@ from search.rerank_client      import RerankClient
 from search.embedding_client   import EmbeddingClient
 from intent.intent_classifier  import IntentClassifier, SimpleIntentClassifier
 
+from search.search_service import init as search_init
 
 # ===========================================================================
 # LlmClient — mirrors Java interface com.lcallai.LlmClient
@@ -395,6 +396,7 @@ def _init_with_type(type_: str, config_dir: str) -> None:
                 "db.postgres.table.online",
                 "enterprise_knowledge_" + ("768" if ACTIVE_EMBED.getDimension() == 768 else "qwen_1024")
             )
+            search_init()
 
         elif type_.lower() == "openai":
             # Full cloud — OpenAI
