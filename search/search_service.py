@@ -240,18 +240,64 @@ if __name__ == "__main__":
         ("Win10能安装吗",         "老师"),
     ]
 
-    for query, category in tests:
+    # for query, category in tests:
+    #     logger.debug("=" * 50)
+    #     logger.debug("query=" + query + "  category=" + str(category))
+    #     items = getRelevantKnowledge(table_name, query, embed_client,
+    #                                  category_filter=category, limit=5)
+    #     if not items:
+    #         logger.debug("❌ 无结果")
+    #     for i, item in enumerate(items):
+    #         logger.debug(
+    #             f"  [{i+1}] dist={KnowledgeItem.__dataclass_fields__ and item.distance:.3f}"
+    #             f"  category={item.category}  summary={item.summary}"
+    #         )
+
+
+
+    # ── Two-stage retrieval 测试（直接调用 ChatSession._performTwoStageRetrievalAsync）──
+    logger.debug("\n" + "=" * 50)
+    logger.debug("🔁 开始测试 _performTwoStageRetrievalAsync")
+
+    from search.rerank_client import RerankClient
+    from session.model_router import ModelRouter
+    from session.chat_session import ChatSession
+
+    rerank_name = AiConfig.getStringConfig("djl.model.rerank.name", "bge-reranker-v2-m3")
+    rerank_path = config_path.replace("\\", "/") + "/" + rerank_name
+    rerank_client = RerankClient(rerank_path)
+
+    router = ModelRouter(
+        rewriter_client=None,
+        rerank_client=rerank_client,
+        final_llm_client=None,
+    )
+
+    session = ChatSession("test_two_stage")
+    session.router          = router
+    session.embeddingClient = embed_client
+    session.tableName       = table_name
+    session.setSInfo("[2stage]")
+
+    two_stage_tests = [
+        #("老师初始密码是多少", "老师"),
+         #("学生忘记密码怎么办", "学生"),
+          ("怎么参加省市级培训", None),
+        # ("Win10能安装吗",      "老师"),
+    ]
+
+    for query, category in two_stage_tests:
         logger.debug("=" * 50)
         logger.debug("query=" + query + "  category=" + str(category))
-        items = getRelevantKnowledge(table_name, query, embed_client,
-                                     category_filter=category, limit=5)
-        if not items:
+        session.currentCategory = category
+        results = session._performTwoStageRetrievalAsyncBatch(query)
+        if not results:
             logger.debug("❌ 无结果")
-        for i, item in enumerate(items):
-            logger.debug(
-                f"  [{i+1}] dist={KnowledgeItem.__dataclass_fields__ and item.distance:.3f}"
-                f"  category={item.category}  summary={item.summary}"
-            )
+        for i, item in enumerate(results):
+            logger.debug(f"  [{i+1}] dist={item['distance']:.3f}"
+                         + "  category=" + str(item['category'])
+                         + "  summary=" + str(item['summary']))
 
+    ChatSession.shutdownExecutor()
     shutdown()
     logger.debug("✅ 测试完成")

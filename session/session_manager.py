@@ -299,9 +299,21 @@ def _init_with_type(type_: str, config_dir: str) -> None:
     global ACTIVE_ROUTER, ACTIVE_EMBED, ACTIVE_TABLE
     global ACTIVE_INTENT_CLASSIFIER, ACTIVE_INTENT_DISPATCHER, _initialized
 
+    global G_SIMILARITY, G_TRUST, G_COMP_EMBED, G_COMP_RERANK
+    global G_MAX_RERANK, G_FINAL_LIMIT, G_RERANK_TIMEOUT
+    global G_RERANK_TRIGGER_MAX, G_RESCUE_SCORE
+
     if _initialized:
         logger.warning("[SessionManager] init() already called — skipping")
         return
+
+
+
+
+
+
+
+
 
     try:
         logger.debug("📂 [System Init] 正在预加载全局配置文件和知识库...")
@@ -337,6 +349,31 @@ def _init_with_type(type_: str, config_dir: str) -> None:
             "你是一个专业且幽默的智能电话客服。请简要回答用户的闲聊，并引导其咨询规定的业务。"
         )
         globalClassifyPrompt = _loadPromptFromFile(globalClassifyPath, "")
+
+
+        # =========================================================================
+        # 1. 统一加载参数初始化 (Parameter Initialization)
+        #    优先从 AiConfig 读取，若无则使用默认值兜底。后续若需针对不同 type 变异，只需修改 conf 文件
+        # =========================================================================
+        G_SIMILARITY         = AiConfig.get_double_config("rag.threshold.similarity", 0.82)
+        G_TRUST              = AiConfig.get_double_config("rag.threshold.trust", 0.25)
+        G_COMP_EMBED         = AiConfig.get_double_config("rag.threshold.comp_embed", 0.45)
+        G_COMP_RERANK        = AiConfig.get_double_config("rag.threshold.comp_rerank", 0.80)
+
+        # 🌟 新增：动态加载粗排过滤防线与补偿机制参数
+        G_RERANK_TRIGGER_MAX = AiConfig.get_double_config("rag.threshold.rerank_trigger_max", 0.60)
+        G_RESCUE_SCORE       = AiConfig.get_double_config("rag.threshold.rescue_score", 0.60)
+
+        G_MAX_RERANK         = AiConfig.get_int_config("rag.limit.max_rerank", 5)
+        G_FINAL_LIMIT        = AiConfig.get_int_config("rag.limit.final_limit", 3)
+        G_RERANK_TIMEOUT     = AiConfig.get_int_config("rag.timeout.rerank", 5)
+
+        logger.info(f"📊 参数初始化完成: SIMILARITY={G_SIMILARITY}, RERANK_TRIGGER_MAX={G_RERANK_TRIGGER_MAX}, RESCUE_SCORE={G_RESCUE_SCORE}")
+
+
+
+
+
 
         # ── LLM client assembly — 4 types ────────────────────────────────────
         # Java: if (type.equalsIgnoreCase("qwen"))   { ... }

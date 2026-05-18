@@ -78,7 +78,7 @@ class ChatSession:
         self.trustThreshold: float          = 0.25
         self.compensateEmbedMax: float      = 0.45
         self.compensateRerankMin: float     = 0.80
-        self.rerankTriggerMax: float        = 0.80
+        self.rerankTriggerMax: float        = 0.60
         self.rescueScore: float             = 0.60
         self.maxRerankCandidates: int       = 5
         self.finalContextLimit: int         = 3
@@ -269,8 +269,8 @@ class ChatSession:
      */
     """
     def getLastAnswer(self) -> Optional[str]:
-        # reversed(obj) automatically calls obj.__reversed__() — Python protocol mechanism
-        for msg in reversed(self.history):
+        #reversed(obj) 会自动调用 obj.__reversed__()，这是 Python 的协议机制：
+        for msg in reversed(self.history):  ## 等价于 self.history.__reversed__()
             if msg.get("role", "").lower() == "assistant":
                 return msg.get("content")
         return None
@@ -325,7 +325,7 @@ class ChatSession:
         t0 = time.time()
         intentResult: IntentResult = self.intentClassifier.classify(text, self.history)
         t1 = time.time()
-        logger.debug(self.sinfo + " [1] intent classification elapsed: " + str(int((t1 - t0) * 1000)) + " ms  intent=" + str(intentResult.intent))
+        logger.debug(self.sinfo + " [1] 意图分类耗时: " + str(int((t1 - t0) * 1000)) + " ms  intent=" + str(intentResult.intent))
 
         if intentResult.intent == Intent.QUERY and intentResult.category is None:
             self.pendingQuery = text
@@ -349,8 +349,8 @@ class ChatSession:
         ca: ChatAnswer= self.intentDispatcher.dispatch(text, intentResult, self)
 
         t2 = time.time()
-        logger.debug(self.sinfo + " [2] Handler elapsed: " + str(int((t2 - t1) * 1000)) + " ms")
-        logger.debug(self.sinfo + " [total] ask() full pipeline elapsed: " + str(int((t2 - t0) * 1000)) + " ms")
+        logger.debug(self.sinfo + " [2] Handler执行耗时: " + str(int((t2 - t1) * 1000)) + " ms")
+        logger.debug(self.sinfo + " [总] ask()全链路耗时: " + str(int((t2 - t0) * 1000)) + " ms")
 
         if ca.answer and ca.answer.strip():
             self._history_add("assistant", ca.answer)
@@ -441,7 +441,7 @@ class ChatSession:
      */
     """
     def askFullContext(self, text: str, isrewrite: bool = False) -> ChatAnswer:
-        logger.debug(self.sinfo + "🚀 executing full knowledge base stuffing pipeline (askFullContext)...")
+        logger.debug(self.sinfo + "🚀 执行全量知识库 Stuffing 流程 (askFullContext)...")
         ca = ChatAnswer(code=-1, answer=None)
 
         if not text or not text.strip():
@@ -465,7 +465,7 @@ class ChatSession:
 
             chatStart = time.time()
             ans = self._executeFinalChat(filteredContext, "")
-            logger.debug(self.sinfo + " [Step 2] AI executeFinalChat elapsed: " + str(int((time.time() - chatStart) * 1000)) + " ms")
+            logger.debug(self.sinfo + " [Step 2] AI executeFinalChat 生成答案耗时: " + str(int((time.time() - chatStart) * 1000)) + " ms")
 
             if ans is not None:
                 ca.answer = ans; ca.code = 0
@@ -474,7 +474,7 @@ class ChatSession:
             return ca
 
         except Exception as e:
-            logger.error(self.sinfo + "robot system error: " + str(e), exc_info=True)
+            logger.error(self.sinfo + "机器人系统故障: " + str(e), exc_info=True)
             ca.code = -1; ca.answer = "机器人系统故障: " + str(e); return ca
 
     """
@@ -507,7 +507,7 @@ class ChatSession:
      */
     """
     def askRerank(self, text: str, isrewrite: bool = False) -> ChatAnswer:
-        logger.debug(self.sinfo + "🚀 executing advanced RAG pipeline (refactored ask3)...isrewrite " + str(isrewrite))
+        logger.debug(self.sinfo + "🚀 执行高级 RAG 流程 (重构版 ask3)...isrewrite " + str(isrewrite))
         ca = ChatAnswer(code=-1, answer=None)
 
         if not text or not text.strip():
@@ -520,15 +520,15 @@ class ChatSession:
             optimizedQuery = processedText
             if isrewrite:
                 optimizedQuery = self._performQueryRewrite(processedText)
-            logger.debug(self.sinfo + "rewrite elapsed=" + str(int((time.time() - requeryStart) * 1000)) + " ms")
+            logger.debug(self.sinfo + "rewrite耗时=" + str(int((time.time() - requeryStart) * 1000)) + " ms")
 
-            finalItems = self._performTwoStageRetrievalAsyncBatch(optimizedQuery)
+            finalItems = self._performTwoStageRetrievalAsync(optimizedQuery)
 
-            logger.debug(self.sinfo + "🔍 candidate list after two-stage retrieval:")
+            logger.debug(self.sinfo + "🔍 检索到的候选列表 after Retrieve - 两阶段检索:")
             for item in finalItems:
-                logger.debug(self.sinfo + "distance: " + self.formatDouble(item.get("distance", 0))
-                             + " category:" + str(item.get("category"))
-                             + " | summary: " + str(item.get("summary")))
+                logger.debug(self.sinfo + "距离: " + self.formatDouble(item.get("distance", 0))
+                             + " 分类:" + str(item.get("category"))
+                             + " | 摘要: " + str(item.get("summary")))
 
             if not finalItems:
                 return self._handleEmptyResult(processedText, ca)
@@ -576,7 +576,7 @@ class ChatSession:
             return text
 
         userPrompt = "Conversation History:\n(" + historyContextStr + ")\n\nCurrent Question: (" + text + ")"
-        logger.debug(self.sinfo + "🔄 rewriting user query using conversation context...userPrompt=" + userPrompt)
+        logger.debug(self.sinfo + "🔄 正在利用上下文重写用户查询...userPrompt=" + userPrompt)
         startTime = time.time()
 
         try:
@@ -584,7 +584,7 @@ class ChatSession:
         except Exception:
             rewritten = None
 
-        logger.debug(self.sinfo + " AI rewritten elapsed: " + str(int((time.time() - startTime) * 1000)) + " ms rewritten:" + str(rewritten))
+        logger.debug(self.sinfo + " AI rewritten Time: " + str(int((time.time() - startTime) * 1000)) + " ms 重写后:" + str(rewritten))
         return rewritten if rewritten else text
 
     """
@@ -595,95 +595,6 @@ class ChatSession:
      * }
      */
     """
-    def _performTwoStageRetrievalAsyncBatch(self, query: str) -> List[dict]:
-        """
-        Batch rerank variant of _performTwoStageRetrievalAsync.
-        Replaces thread-pool parallel rerank with a single batch inference call
-        to CrossEncoder.predict(pairs), which is 3-5x faster for small candidate sets.
-        """
-        from search.search_service import getRelevantKnowledge
-        import time as _time
-
-        queryStart = _time.time()
-
-        allCandidates = getRelevantKnowledge(
-            self.tableName, query, self.embeddingClient,
-            category_filter=self.currentCategory
-        )
-
-        if not allCandidates:
-            return []
-
-        logger.debug(self.sinfo + "🔍 vector search elapsed="
-                     + str(int((_time.time() - queryStart) * 1000)) + " ms")
-        for item in allCandidates:
-            logger.debug(self.sinfo + "dist: " + self.formatDouble(item.distance)
-                         + " category: " + str(item.category) + " | summary: " + str(item.summary))
-
-        if self.queryMode and self.queryMode.lower() == "retrieveonly":
-            logger.debug(self.sinfo + "⚠️ retrieveOnly mode, skip rerank, return vector results directly.")
-            return [self._item_to_dict(i) for i in allCandidates[:3]]
-
-        fastTrackItems = []
-        slowPool = []
-
-        for item in allCandidates:
-            if item.distance < self.trustThreshold:
-                logger.debug(self.sinfo + "fast-track hit dist: "
-                             + self.formatDouble(item.distance) + " | summary: " + str(item.summary))
-                fastTrackItems.append(item)
-            elif item.distance < self.rerankTriggerMax:
-                slowPool.append(item)
-
-        if len(fastTrackItems) >= 1:
-            logger.debug(self.sinfo + "🚀 fast-track fired, skip rerank.")
-            return [self._item_to_dict(i) for i in fastTrackItems[:3]]
-
-        if not slowPool:
-            logger.debug(self.sinfo + "no slow pool candidates, skip rerank.")
-            return [self._item_to_dict(i) for i in fastTrackItems]
-
-        needRerankItems = slowPool[:self.maxRerankCandidates]
-
-        logger.debug(self.sinfo + "🎯 batch rerank, candidates: " + str(len(needRerankItems)))
-        rerankStart = _time.time()
-
-        # documents = [
-        #     "分类：" + (item.category or "") + "\n摘要：" + (item.summary or "") + "\n内容：" + (item.content or "")
-        #     for item in needRerankItems
-        # ]
-        # # 💡 优化后的写法：去掉所有人工拼接的噪声标签，只喂纯文本
-        documents = [
-            (item.content or "")
-            for item in needRerankItems
-        ]
-
-        # 💡 替代方案（如果分类和摘要必须参与精排）：
-        # documents = [
-        #     f"{(item.category or '')} {(item.summary or '')} {(item.content or '')}".strip()
-        #     for item in needRerankItems
-        # ]
-
-        logger.debug(self.sinfo + "documents="+ str(documents))
-        scores = self.router.rerank_batch(query, documents)
-
-        for item, rerank_dist in zip(needRerankItems, scores):
-            original_dist = item.distance
-            if original_dist < self.compensateEmbedMax and rerank_dist > self.compensateRerankMin:
-                logger.debug(self.sinfo + "💡 [rescue] summary: " + str(item.summary)
-                             + " embed_dist=" + str(original_dist) + " rescued to rescueScore.")
-                item.distance = self.rescueScore
-            else:
-                item.distance = rerank_dist
-
-        logger.debug(self.sinfo + " rerank_batch elapsed: "
-                     + str(int((_time.time() - rerankStart) * 1000)) + " ms")
-
-        finalResults = fastTrackItems + needRerankItems
-        finalResults.sort(key=lambda x: x.distance)
-
-        return [self._item_to_dict(i) for i in finalResults[:self.finalContextLimit]]
-
     def _performTwoStageRetrievalAsync(self, query: str) -> List[dict]:
         from search.search_service import getRelevantKnowledge, KnowledgeItem
         from concurrent.futures import as_completed
@@ -700,15 +611,15 @@ class ChatSession:
         if not allCandidates:
             return []
 
-        logger.debug(self.sinfo + "🔍 coarse-ranking candidates from getRelevantKnowledge, elapsed="
+        logger.debug(self.sinfo + "🔍 检索到的候选列表getRelevantKnowledge: 粗排耗时="
                      + str(int((_time.time() - queryStart) * 1000)) + " ms")
         for item in allCandidates:
-            logger.debug(self.sinfo + "distance: " + self.formatDouble(item.distance)
-                         + " category: " + str(item.category) + " | summary: " + str(item.summary))
+            logger.debug(self.sinfo + "距离: " + self.formatDouble(item.distance)
+                         + " 分类: " + str(item.category) + " | 摘要: " + str(item.summary))
 
         # Java: if ("retrieveOnly".equalsIgnoreCase(queryMode)) return subList(0, 3);
         if self.queryMode and self.queryMode.lower() == "retrieveonly":
-            logger.debug(self.sinfo + "⚠️ hybrid mode optimization: skipping rerank, returning coarse-ranking results directly.")
+            logger.debug(self.sinfo + "⚠️ 混合模式性能优化：跳过精排，直接返回粗排结果。")
             return [self._item_to_dict(i) for i in allCandidates[:3]]
 
         # Java: List<KnowledgeItem> fastTrackItems = new ArrayList<>();
@@ -718,36 +629,40 @@ class ChatSession:
 
         # Java: for (KnowledgeItem item : allCandidates) { if (distance < trustThreshold) ... }
         for item in allCandidates:
-            if item.distance < self.trustThreshold:  # 0.25 — absolute trust, skip rerank
-                logger.debug(self.sinfo + "absolute trust, direct hit, distance: "
-                             + self.formatDouble(item.distance) + " | summary: " + str(item.summary))
+            if item.distance < self.trustThreshold:  #0.25
+                # Java: 🚀 [绝对信任] 直接命中，跳过精排
+                logger.debug(self.sinfo + "绝对信任 直接命中 距离: "
+                             + self.formatDouble(item.distance) + " | 摘要: " + str(item.summary))
                 fastTrackItems.append(item)
-            elif item.distance < self.rerankTriggerMax:  # 0.6 — uncertain, send to rerank pool
+            elif item.distance < self.rerankTriggerMax: #0.6
+                # Java: 🔍 [待定筛选] 送去精排
                 slowPool.append(item)
 
         # Java: if (fastTrackItems.size() >= 1) return fastTrackItems.subList(0, 3);
         if len(fastTrackItems) >= 1:
-            logger.debug(self.sinfo + "🚀 [circuit breaker] fast-track hit, returning directly, skipping rerank.")
+            logger.debug(self.sinfo + "🚀 [性能熔断] 命中上帝视角条目，直接返回，彻底跳过精排任务。")
             return [self._item_to_dict(i) for i in fastTrackItems[:3]]
 
         # Java: if (slowPool.isEmpty()) return fastTrackItems;
         if not slowPool:
-            logger.debug(self.sinfo + "no candidates need reranking, returning existing results, skipping rerank.")
+            logger.debug(self.sinfo + "没有候选需要精排，直接返回已有的 跳过精排任务。")
             return [self._item_to_dict(i) for i in fastTrackItems]
 
         # Java: needRerankItems = slowPool.stream().limit(maxRerankCandidates).toList();
-        needRerankItems = slowPool[:self.maxRerankCandidates]  # top 5
+        needRerankItems = slowPool[:self.maxRerankCandidates] #5
 
-        logger.debug(self.sinfo + "🎯 launching parallel rerank, sample count: " + str(len(needRerankItems)))
+        logger.debug(self.sinfo + "🎯 启动并行精排，样本数: " + str(len(needRerankItems)))
         rerankStart = _time.time()
 
         # Java: CompletableFuture.runAsync(() -> { calculateSemanticDistance(...) }, rerankExecutor)
-        # Equivalent to running in a background thread: self._rerank_item(query, item, original_dist)
-        # Arguments:
-        #   self._rerank_item  — the function to run
-        #   query              — the user's search query string
-        #   item               — the candidate knowledge item to score
-        #   original_dist      — the coarse-ranking distance (saved before reranking overwrites it)
+
+        # is equivalent to running this in a background thread:
+        # pythonself._rerank_item(query, item, original_dist)
+        # The arguments:
+        # self._rerank_item — the function to run
+        # query — the user's search query string
+        # item — the candidate knowledge item to score
+        # original_dist — the coarse-ranking distance of that item (saved before reranking overwrites it)
 
         futures = {}
         for item in needRerankItems:
@@ -755,32 +670,35 @@ class ChatSession:
             fut = _rerank_executor.submit(
                 self._rerank_item, query, item, original_dist
             )
-            futures[fut] = item  # fut is a Future object — a "ticket" for a background task
+            futures[fut] = item #fut 代表一个正在后台执行的任务的"凭证"
+
+
 
         # Java: CompletableFuture.allOf(...).get(5, TimeUnit.SECONDS)
-        # Compensation logic — triggers only when BOTH conditions are met:
-        #   original_dist < compensateEmbedMax (0.45): coarse-ranking distance is very close,
-        #       meaning the vector search considers it highly relevant
-        #   rerank_dist > compensateRerankMin (0.80): but the reranker gave it a low score,
-        #       considering it irrelevant
-        # This is likely a reranker false negative — coarse ranking strongly endorses it but
-        # the reranker got it wrong. Force-assign rescueScore (0.60) to pull it back from
-        # elimination and keep it in the final ranking.
+# The compensation triggers only when both conditions are met simultaneously:
+# original_dist < compensateEmbedMax (0.45): the coarse-ranking distance is very close,
+#         meaning the vector search considers it highly relevant
+# rerank_dist > compensateRerankMin (0.80): but the reranker gave it a low score,
+#         considering it irrelevant
+#
+# This situation is likely a reranker false negative — the coarse ranking strongly endorses
+#     it but the reranker got it wrong.
+#     So we force-assign a middle score rescueScore (0.60) to pull it back from elimination and
+#     keep it in the final ranking.
 
-        # submit(_rerank_item)               — submit task to thread pool
-        #   → _rerank_item()                 — executes in background thread
-        #       → _calculateSemanticDistance() — computes distance
-        #           → rerank_client.rerank()   — model scores the pair
-        #           → return round(1 - score)  — convert score to distance
-        #   → return rerank_dist             — _rerank_item returns the distance
-        # fut.result()                       — retrieve the return value
-        # fut.done()      — whether the task is complete (True/False)
-        # fut.running()   — whether the task is currently running (True/False)
-        # fut.cancelled() — whether the task was cancelled (True/False)
+# submit(_rerank_item)          # 提交任务
+# → _rerank_item()          # 线程里执行
+# → _calculateSemanticDistance()  # 计算距离
+# → rerank_client.rerank()    # 模型打分
+# → return round(1 - score)  # 转成距离
+# → return rerank_dist       # _rerank_item 返回距离
+# fut.result()                   # 取出这个返回值
+# fut.done()      # 任务是否完成（True/False）
+# fut.running()   # 任务是否正在运行（True/False）
+# fut.cancelled() # 任务是否被取消（True/False）
         try:
-            # as_completed: yields whichever Future finishes first, not in submission order.
-            # It watches all tasks and hands each one out the moment it completes,
-            # so the for-loop processes results immediately without waiting for slower tasks.
+            #as_completed 是 Python concurrent.futures 里的一个工具函数
+            #传入一组 Future，哪个先算完就先process 哪个，不按提交顺序等待 as_completed 内部盯着所有任务，谁完成了就立刻把谁扔出来，for 循环接住它立即处理，不等其他人
             for fut in as_completed(futures, timeout=self.rerankTimeoutSeconds):
                 item        = futures[fut]
                 original_dist = item.distance
@@ -788,28 +706,27 @@ class ChatSession:
                     rerank_dist = fut.result()
                     # Java: if (originalDist < compensateEmbedMax && rerankDist > compensateRerankMin)
                     if original_dist < self.compensateEmbedMax and rerank_dist > self.compensateRerankMin:
-                        logger.debug(self.sinfo + "💡 [compensation hit] summary: " + str(item.summary)
-                                     + " coarse dist " + str(original_dist) + " excellent, forcing rerank score correction.")
+                        logger.debug(self.sinfo + "💡 [命中补偿] 摘要: " + str(item.summary)
+                                     + " 粗排距离 " + str(original_dist) + " 极优，强制修正精排分。")
                         item.distance = self.rescueScore
                     else:
                         item.distance = rerank_dist
                 except Exception as e:
-                    logger.debug(self.sinfo + "rerank single item exception: " + str(e))
+                    logger.debug(self.sinfo + "精排单项异常: " + str(e))
         except Exception:
-            logger.error("⚠️ some rerank tasks timed out, sorting with available results.")
+            logger.error("⚠️ 部分精排任务超时，执行现有结果排序。")
 
         # Java: finalResults.addAll(fastTrackItems); finalResults.addAll(needRerankItems);
         finalResults = fastTrackItems + needRerankItems
 
         # Java: finalResults.sort(Comparator.comparingDouble(a -> a.distance));
-        # lambda syntax: lambda parameter: return_value
-        finalResults.sort(key=lambda x: x.distance)
+        finalResults.sort(key=lambda x: x.distance) #lambda 参数: 返回值
 
-        logger.debug(self.sinfo + " rerank full pipeline elapsed: "
+        logger.debug(self.sinfo + " rerank检索全链路耗时: "
                      + str(int((_time.time() - rerankStart) * 1000)) + " ms")
 
         # Java: return finalResults.subList(0, Math.min(finalContextLimit, finalResults.size()));
-        # Take the top N sorted items, convert each object to a dict, and return as a list.
+        #Get the top 3 sorted items, convert each object into a dictionary, and pack them into a list to return
         return [self._item_to_dict(i) for i in finalResults[:self.finalContextLimit]]
 
     def _rerank_item(self, query: str, item, original_dist: float) -> float:
@@ -848,15 +765,13 @@ class ChatSession:
         document = "分类：" + category + "\n摘要：" + summary + "\n内容：" + content
         try:
             score = self.router.rerank(query, document) if self.router else 0.0
-            # Score (relevance) → invert → distance.
-            # The smaller the final distance, the more relevant —
-            # consistent with the coarse-ranking vector distance semantics.
+            ## "Score (relevance) → invert → distance. The smaller the final distance, the more relevant — consistent with the coarse-ranking vector distance semantics."
             re    = 1.0 - min(score, 1.0)
             logger.debug(self.sinfo + " Rerank score=" + self.formatDouble(re)
-                         + " category=" + category + " summary=" + summary + " raw score: " + str(score))
+                         + " category=" + category + " summary=" + summary + " 原始评分: " + str(score))
             return round(re * 100.0) / 100.0
         except Exception as e:
-            logger.debug(self.sinfo + " Rerank exception: " + str(e))
+            logger.debug(self.sinfo + " Rerank 异常: " + str(e))
         return 1.0
 
     """
@@ -882,7 +797,7 @@ class ChatSession:
             logger.error(self.sinfo + "executeChitchat error: " + str(e))
             answer = None
 
-        logger.debug(self.sinfo + " chitchat generation elapsed: " + str(int((time.time() - chatStart) * 1000)) + " ms")
+        logger.debug(self.sinfo + " 闲聊生成耗时: " + str(int((time.time() - chatStart) * 1000)) + " ms")
         return answer
 
     """
@@ -904,7 +819,7 @@ class ChatSession:
 
         chatStart   = time.time()
         jsonPayload = json.dumps(self.history.toJsonArrayWithWindow(), ensure_ascii=False)
-        logger.debug(self.sinfo + "finalAsk context length: " + str(len(jsonPayload)) + " chars")
+        logger.debug(self.sinfo + "finalAsk Context 长度: " + str(len(jsonPayload)) + " chars")
 
         try:
             answer = self.router.finalLlm().chat(self.history.toJsonArrayWithWindow()) if self.router else None
@@ -913,8 +828,8 @@ class ChatSession:
             logger.error(self.sinfo + "_executeFinalChat error: " + str(e))
             answer = None
 
-        logger.debug(self.sinfo + " finalAsk elapsed: " + str(int((time.time() - chatStart) * 1000)) + " ms")
-        logger.debug(self.sinfo + " AI response:\n" + str(answer))
+        logger.debug(self.sinfo + " finalAsk 耗时: " + str(int((time.time() - chatStart) * 1000)) + " ms")
+        logger.debug(self.sinfo + " AI应答：\n" + str(answer))
         return answer
 
     # Java: private void recordQueryHistory_nouse(...) — dead code stub
@@ -932,11 +847,11 @@ class ChatSession:
      */
     """
     def close(self) -> None:
-        logger.debug(self.sinfo + "🗑️ releasing ChatSession resources...")
+        logger.debug(self.sinfo + "🗑️ 正在释放 ChatSession 资源...")
         self.history.clear()
         self.fulltext      = None
         self.systemMessage = None
-        logger.debug(self.sinfo + "✅ ChatSession released.")
+        logger.debug(self.sinfo + "✅ ChatSession 释放完毕。")
 
     """
     /*
@@ -952,7 +867,7 @@ class ChatSession:
     @staticmethod
     def shutdownExecutor() -> None:
         global _rerank_executor
-        logger.debug("🛑 shutting down rerank thread pool...")
+        logger.debug("🛑 正在关闭 Rerank 线程池...")
         _rerank_executor.shutdown(wait=False)
 
     """
@@ -997,15 +912,17 @@ class ChatSession:
         lines = [line for line in fulltext.split("\n") if "||" + category + "||" in line]
         return "\n".join(lines)
 
-    # Expanded equivalent of the list comprehension above:
-    # result = []
+    #展开写法
+    # result = [] 列表
     # for line in fulltext.split("\n"):
     #     if "||" + category + "||" in line:
     #         result.append(line)
-    # return "\n".join(result)
     #
-    # "\n".join(result) joins each element in the list with "\n" between them:
-    # line1 + "\n" + line2 + "\n" + line3
+    # return "\n".join(result)
+#"\n".join(result) 的意思是：用 \n 把列表里每个元素连接成一个字符串。
+# join 做的事
+#line1 + "\n" + line2 + "\n" + line3
+
 
     """
     /*
@@ -1069,7 +986,7 @@ class ChatSession:
             content = re.sub(r"(?m)^\s*\n", "", content)
             return content.strip()
         except Exception as e:
-            logger.error("⚠️ warning: cannot read config from " + filePath + ", using default prompt. reason: " + str(e))
+            logger.error("⚠️ 警告：无法从 " + filePath + " 读取配置，将使用默认 Prompt。原因: " + str(e))
             return defauts
 
     """
@@ -1091,7 +1008,7 @@ class ChatSession:
     def _loadKnowledgeBase(self, filePath: str) -> str:
         import os
         if not os.path.exists(filePath):
-            logger.error("❌ knowledge base file not found: " + filePath)
+            logger.error("❌ 知识库文件不存在: " + filePath)
             return ""
         try:
             with open(filePath, "rb") as f:
@@ -1099,13 +1016,13 @@ class ChatSession:
             content = raw.decode("utf-8")
             if content.startswith("\uFEFF"):
                 content = content[1:]
-            logger.debug(self.sinfo + "📚 knowledge base loaded: " + filePath + " (length: " + str(len(content)) + " chars)")
+            logger.debug(self.sinfo + "📚 知识库加载成功: " + filePath + " (长度: " + str(len(content)) + " 字符)")
             return content.strip()
         except IOError as e:
-            logger.error("💥 I/O exception while loading knowledge base: " + str(e))
+            logger.error("💥 加载知识库时发生 I/O 异常: " + str(e))
             return ""
         except Exception as e:
-            logger.error("💥 unknown error while loading knowledge base: " + str(e))
+            logger.error("💥 加载知识库时发生未知错误: " + str(e))
             return ""
 
     # ── ChatHistory helpers (mirrors Java ChatHistory.addMessage / trim / toPlainText) ──

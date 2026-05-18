@@ -54,7 +54,8 @@ class ModelRouter:
     """
     def rerank(self, query: str, document: str) -> float:
         return self._reranker.rerank(query, document)
-
+    def rerank_batch(self, query: str, documents: list) -> list:
+        return self._reranker.rerank_batch(query, documents)
     """
     public void setRerankPrompt(String prompt) { this.rerankPrompt = prompt; }
     """
