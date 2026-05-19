@@ -78,7 +78,7 @@ class ChatSession:
         self.trustThreshold: float          = 0.25
         self.compensateEmbedMax: float      = 0.45
         self.compensateRerankMin: float     = 0.80
-        self.rerankTriggerMax: float        = 0.80
+        self.rerankTriggerMax: float        = 0.60
         self.rescueScore: float             = 0.60
         self.maxRerankCandidates: int       = 5
         self.finalContextLimit: int         = 3

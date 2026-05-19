@@ -32,12 +32,12 @@ class RerankClient:
 
     def __init__(self, model_path: str):
         from sentence_transformers import CrossEncoder
-        logger.debug("⏳ 正在加载 Rerank 模型: " + model_path)
+        logger.debug("⏳ loading Rerank model: " + model_path)
         self._model = CrossEncoder(model_path)
-        logger.debug("✅ Rerank 模型加载完成")
-        logger.info("⏳ 正在预热精排模型 (Warming up Reranker)...")
-        self._model.predict([["warmup", "warmup"]], max_length=16, show_progress_bar=False)
-        logger.info("✅ 精排模型预热完毕")
+        logger.debug("✅ Rerank model loaded")
+        #logger.info("⏳ 正在预热精排模型 (Warming up Reranker)...")
+       # self._model.predict([["warmup", "warmup"]], max_length=16, show_progress_bar=False)
+       # logger.info("✅ 精排模型预热完毕")
     """
     public double rerank(String query, String document) {
         float rawLogit     = predictor.predict(new String[]{query, document});

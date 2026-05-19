@@ -25,10 +25,10 @@ class EmbeddingClient:
         Python: model_path passed in directly from SessionManager after AiConfig read.
         """
         from sentence_transformers import SentenceTransformer
-        logger.debug("⏳ 正在加载 Embedding 模型: " + model_path)
+        logger.debug("⏳ loading Embedding model: " + model_path)
         self._model = SentenceTransformer(model_path)
         self._dimension = len(self._model.encode("test"))
-        logger.debug("✅ Embedding 模型加载完成，维度: " + str(self._dimension))
+        logger.debug("✅ Embedding model loaded，dimension: " + str(self._dimension))
 
     """
     public double[] embed(String text) throws Exception {

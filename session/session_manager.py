@@ -53,6 +53,7 @@ class LlmClient:
     def __init__(self, client: OpenAI, model: str):
         self._client = client   # Java: private final OkHttpClient client
         self._model  = model    # Java: private final String model — fixed at construction
+        logger.debug(f"LlmClient created: model={model} httpx_client_id={id(client._client)}")
 
     # Java: public String generate(String systemPrompt, String userPrompt)
     def generate(self, system_prompt: str, user_prompt: str) -> str:
@@ -66,6 +67,7 @@ class LlmClient:
                 {"role": "user",   "content": user_prompt},
             ],
             temperature=0.0,
+            top_p=1.0,  # ✅ 新增：配合 temp=0 彻底关闭采样扰动
             max_tokens=256,
             response_format={"type": "json_object"},
         )
@@ -77,8 +79,10 @@ class LlmClient:
         resp = self._client.chat.completions.create(
             model=self._model,
             messages=messages,
-            temperature=0.7,
+            temperature=0.1,     # ✅ 从 0.7 降到 0.1，平衡自然度+稳定性
+            top_p=0.9,           # ✅ 新增：关闭极端采样
             max_tokens=1024,
+
         )
         return resp.choices[0].message.content.strip()
 
@@ -89,7 +93,7 @@ from session.chat_session      import ChatSession
 
 from handler.greeting_handler  import GreetingHandler
 from handler.query_handler     import QueryHandler
-from handler.filling_handler   import FillingHandler   # INFORM → FillingHandler
+#from handler.filling_handler   import FillingHandler   # INFORM → FillingHandler
 
 # Optional handlers — graceful degradation when not yet implemented
 # (mirrors Java: all 7 handlers registered in IntentDispatcher assembly)
@@ -355,18 +359,18 @@ def _init_with_type(type_: str, config_dir: str) -> None:
         # 1. 统一加载参数初始化 (Parameter Initialization)
         #    优先从 AiConfig 读取，若无则使用默认值兜底。后续若需针对不同 type 变异，只需修改 conf 文件
         # =========================================================================
-        G_SIMILARITY         = AiConfig.get_double_config("rag.threshold.similarity", 0.82)
-        G_TRUST              = AiConfig.get_double_config("rag.threshold.trust", 0.25)
-        G_COMP_EMBED         = AiConfig.get_double_config("rag.threshold.comp_embed", 0.45)
-        G_COMP_RERANK        = AiConfig.get_double_config("rag.threshold.comp_rerank", 0.80)
+        G_SIMILARITY         = AiConfig.getDoubleConfig("rag.threshold.similarity", 0.82)
+        G_TRUST              = AiConfig.getDoubleConfig("rag.threshold.trust", 0.25)
+        G_COMP_EMBED         = AiConfig.getDoubleConfig("rag.threshold.comp_embed", 0.45)
+        G_COMP_RERANK        = AiConfig.getDoubleConfig("rag.threshold.comp_rerank", 0.80)
 
         # 🌟 新增：动态加载粗排过滤防线与补偿机制参数
-        G_RERANK_TRIGGER_MAX = AiConfig.get_double_config("rag.threshold.rerank_trigger_max", 0.60)
-        G_RESCUE_SCORE       = AiConfig.get_double_config("rag.threshold.rescue_score", 0.60)
+        G_RERANK_TRIGGER_MAX = AiConfig.getDoubleConfig("rag.threshold.rerank_trigger_max", 0.60)
+        G_RESCUE_SCORE       = AiConfig.getDoubleConfig("rag.threshold.rescue_score", 0.60)
 
-        G_MAX_RERANK         = AiConfig.get_int_config("rag.limit.max_rerank", 5)
-        G_FINAL_LIMIT        = AiConfig.get_int_config("rag.limit.final_limit", 3)
-        G_RERANK_TIMEOUT     = AiConfig.get_int_config("rag.timeout.rerank", 5)
+        G_MAX_RERANK         = AiConfig.getIntConfig("rag.limit.max_rerank", 5)
+        G_FINAL_LIMIT        = AiConfig.getIntConfig("rag.limit.final_limit", 3)
+        G_RERANK_TIMEOUT     = AiConfig.getIntConfig("rag.timeout.rerank", 5)
 
         logger.info(f"📊 参数初始化完成: SIMILARITY={G_SIMILARITY}, RERANK_TRIGGER_MAX={G_RERANK_TRIGGER_MAX}, RESCUE_SCORE={G_RESCUE_SCORE}")
 
@@ -383,6 +387,8 @@ def _init_with_type(type_: str, config_dir: str) -> None:
         # Java: else { throw new IllegalArgumentException("不支持的大模型类型: " + type); }
 
         ALIYUN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        #ALIYUN_BASE_URL = "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+
         OPENAI_BASE_URL = "https://api.openai.com/v1"
 
         if type_.lower() == "qwen":
@@ -404,7 +410,7 @@ def _init_with_type(type_: str, config_dir: str) -> None:
             ACTIVE_EMBED  = None   # cloud embed via DashScope — RAG to be wired via SearchService
             ACTIVE_TABLE  = AiConfig.getStringConfig("db.postgres.table.online", "enterprise_knowledge_qwen_1024")
 
-        elif type_.lower() == "hybrid":
+        elif type_.lower() == "hybrid-qwen":
             # Cloud LLM + local rerank/embed (recommended for production)
             # rewriter: qwen-turbo  finalLlm: qwen-plus  rerank: local CrossEncoder  embed: local ST
             GLOBAL_QWEN_KEY = AiConfig.getStringConfig(
@@ -433,8 +439,37 @@ def _init_with_type(type_: str, config_dir: str) -> None:
                 "db.postgres.table.online",
                 "enterprise_knowledge_" + ("768" if ACTIVE_EMBED.getDimension() == 768 else "qwen_1024")
             )
-            search_init()
 
+        elif type_.lower() == "hybrid-openai":
+            # Cloud LLM (OpenAI) + local rerank/embed
+            # intent/rewriter: gpt-4o-mini   finalLlm: gpt-4o
+            # rerank: local CrossEncoder      embed: local SentenceTransformer
+            openai_key = AiConfig.getStringConfig(
+                "api.key.openai", os.environ.get("OPENAI_API_KEY") or ""
+            )
+            if not openai_key:
+                raise RuntimeError("❌ type=hybrid-openai requires api.key.openai / OPENAI_API_KEY")
+            logger.debug("DEBUG: OPENAI_API_KEY length = " + str(len(openai_key)))
+
+            _client    = OpenAI(api_key=openai_key, base_url=OPENAI_BASE_URL)
+            miniClient = LlmClient(_client, model="gpt-4.1-mini")   # intent classifier + rewriter
+            gpt4oClient= LlmClient(_client, model="gpt-4o")        # final answer
+
+            # local rerank — same as hybrid
+            rerank_name = AiConfig.getStringConfig("djl.model.rerank.name", "bge-reranker-v2-m3")
+            rerank_path = base.rstrip("/") + "/" + rerank_name
+            reranker    = RerankClient(rerank_path)
+
+            ACTIVE_ROUTER = ModelRouter(miniClient, reranker, gpt4oClient)
+
+            # local embed — same as hybrid
+            embed_name   = AiConfig.getStringConfig("djl.model.embed.name", "bge-large-zh-v1.5")
+            embed_path   = base.rstrip("/") + "/" + embed_name
+            ACTIVE_EMBED = EmbeddingClient(embed_path)
+            ACTIVE_TABLE = AiConfig.getStringConfig(
+                "db.postgres.table.online",
+                "enterprise_knowledge_" + ("768" if ACTIVE_EMBED.getDimension() == 768 else "1024")
+            )
         elif type_.lower() == "openai":
             # Full cloud — OpenAI
             # rewriter: gpt-4o-mini  finalLlm: gpt-4o  rerank: gpt-4o-mini(LLM)  embed: text-embedding-3-small
@@ -462,7 +497,7 @@ def _init_with_type(type_: str, config_dir: str) -> None:
 
         else:
             raise ValueError("不支持的大模型类型: " + type_ + "  支持: qwen / hybrid / openai / simple")
-
+        search_init()
         logger.debug("✅ [System Init] 全局资源加载完成。type=" + type_)
 
         # ── Intent classifier assembly ────────────────────────────────────────
@@ -745,7 +780,53 @@ def _loadPromptFromFile(filePath: str, defaultValue: str) -> str:
         # Java: return defaultValue;
         return defaultValue
 
+def warm_up() -> None:
+    """
+    Mirrors Java: public static void warmUp()
+    Warms up the full pipeline: rewriter + rerank + finalLlm + embed.
+    Call after init() and before the first real request.
+    """
+    if not AiConfig.getStringConfig("system.warmup.enabled", "true").lower() == "true":
+        logger.debug("skip warmup: system.warmup.enabled=false")
+        return
 
+    if ACTIVE_ROUTER is None or ACTIVE_EMBED is None:
+        logger.debug("⚠️ warm_up skipped: model clients not yet initialized.")
+        return
+
+    logger.debug("⏳ Starting full pipeline warm-up (rewriter + rerank + finalLlm + embed)...")
+    import time as _time
+    total_start = _time.time()
+
+    try:
+        t = _time.time()
+        ACTIVE_ROUTER.rewriter().generate("Output json.", "respond with json: {\"ok\":1}")
+        logger.debug("✅ rewriter warm-up done  t=" + str(int((_time.time() - t) * 1000)) + " ms")
+    except Exception as e:
+        logger.error("⚠️ rewriter warm-up failed: " + str(e))
+
+    try:
+        t = _time.time()
+        ACTIVE_ROUTER.rerank("Beijing", "Beijing is the capital of China.")
+        logger.debug("✅ rerank warm-up done    t=" + str(int((_time.time() - t) * 1000)) + " ms")
+    except Exception as e:
+        logger.error("⚠️ rerank warm-up failed: " + str(e))
+
+    try:
+        t = _time.time()
+        ACTIVE_ROUTER.finalLlm().generate("Output json.", "respond with json: {\"ok\":1}")
+        logger.debug("✅ finalLlm warm-up done  t=" + str(int((_time.time() - t) * 1000)) + " ms")
+    except Exception as e:
+        logger.error("⚠️ finalLlm warm-up failed: " + str(e))
+
+    try:
+        t = _time.time()
+        ACTIVE_EMBED.embed("hello")
+        logger.debug("✅ embed warm-up done     t=" + str(int((_time.time() - t) * 1000)) + " ms")
+    except Exception as e:
+        logger.error("⚠️ embed warm-up failed: " + str(e))
+
+    logger.debug("✅ full pipeline warm-up complete  total=" + str(int((_time.time() - total_start) * 1000)) + " ms")
 # ===========================================================================
 # Java: private static String loadKnowledgeBase(String filePath) {
 # Java:     try {

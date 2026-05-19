@@ -188,8 +188,8 @@ def main():
 
     # Java: SessionManager.init(configPath); SessionManager.warmUp();
     session_manager.init(config_dir=config_path)
-
-    # Java: RagCase[][] allScenarios = { scenarioCorrect, scenarioInherit, ... };
+    session_manager.warm_up()
+# Java: RagCase[][] allScenarios = { scenarioCorrect, scenarioInherit, ... };
     all_scenarios = [
         scenario_correct,
         scenario_inherit,
@@ -204,10 +204,10 @@ def main():
     ]
 
     # Java: allScenarios2 = { scenarioCorrect } — run subset for now
-    all_scenarios2 = [scenario_boundary]
+    all_scenarios2 = [scenario_correct]
 
     # Java: for (int s = 0; s < allScenarios2.length; s++) { runScenario(...) }
-    for s, cases in enumerate(all_scenarios2):
+    for s, cases in enumerate(all_scenarios2[:1]):
         run_scenario(
             client_id + "_scenario_" + str(s + 1),
             scenario_names[s],
