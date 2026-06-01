@@ -47,12 +47,12 @@ class IntentDispatcher:
         handler = self._handlers.get(result.intent)
 
         if handler is None:
-            logger.error("[IntentDispatcher] 未注册的 intent: " + str(result.intent) + "，降级为 QUERY")
+            logger.error("[IntentDispatcher] unregistered intent: " + str(result.intent) + ", falling back to QUERY")
             handler = self._handlers.get(Intent.QUERY)
 
         if handler is None:
             from models import ChatAnswer
-            return ChatAnswer(code=-1, answer="系统配置错误：未找到任何可用的意图处理器")
+            return ChatAnswer(code=-1, answer="System error: no handler found.")
 
         return handler.handle(raw_text, result, session)
 

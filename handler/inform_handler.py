@@ -22,7 +22,7 @@ RESPONSES = [
 class InformHandler(IntentHandler):
 
     def handle(self, raw_text: str, result: IntentResult, session) -> ChatAnswer:
-        logger.debug("[InformHandler] 已记录用户背景信息: " + raw_text)
+        logger.debug("[InformHandler] recorded user background info: " + raw_text)
 
         # Java: if (result.category != null && !result.category.isBlank())
         if result.category and result.category.strip():

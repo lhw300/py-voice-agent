@@ -39,7 +39,8 @@ class ChitchatHandler(IntentHandler):
     }
     """
     def handle(self, raw_text: str, result: IntentResult, session) -> ChatAnswer:
-        logger.debug("[ChitchatHandler] 切换至纯净对话模式，跳过所有知识库检索")
+
+        logger.debug("[ChitchatHandler] switching to pure chat mode, skipping knowledge retrieval")
         try:
             # Java: String optimizedQuery = result.refinedQuery != null ? result.refinedQuery : rawText;
             optimizedQuery = result.refined_query if result.refined_query else raw_text
@@ -49,5 +50,9 @@ class ChitchatHandler(IntentHandler):
 
             return ChatAnswer(code=0, answer=ans)
         except Exception as e:
-            logger.error(str(e))
-            return ChatAnswer(code=-1, answer="闲聊系统暂时休息了: ")
+            logger.error("[ChitchatHandler] error: " + str(e))
+            err_text = AiConfig.getStringConfig(
+                "response.chitchat.error",
+                "Sorry, the chat service is temporarily unavailable."
+            )
+            return ChatAnswer(code=-1, answer=err_text)
