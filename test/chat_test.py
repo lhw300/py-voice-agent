@@ -27,7 +27,7 @@ def chat(vo_id: str, text: str, sn: str) -> str:
 if __name__ == "__main__":
     sn = str(random.randint(1000, 9999))
     vo_id = "filling_ai"
-
+    vo_id = "ai_send"
     print(f"=== 交互测试 vo_id={vo_id} sn={sn} ===")
     print("输入 'quit' 或 'exit' 退出，输入 'new' 开始新会话\n")
 

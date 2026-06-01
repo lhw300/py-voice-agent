@@ -6,7 +6,7 @@ import random
 from intent.intent_handler import IntentHandler
 from intent.intent_result import IntentResult
 from models import ChatAnswer
-
+import ai_config as AiConfig
 logger = logging.getLogger(__name__)
 
 # Java: private static final String[] RESPONSES = { ... };
@@ -20,21 +20,7 @@ RESPONSES = [
 
 
 class InformHandler(IntentHandler):
-    """
-    public ChatAnswer handle(String rawText, IntentResult result, ChatSession session) {
-        logger.debug("[InformHandler] 已记录用户背景信息: " + rawText);
-        if (result.category != null && !result.category.isBlank()) {
-            session.setCurrentCategory(result.category);
-        }
-        String pending = session.getPendingQuery();
-        if (pending != null) {
-            session.clearPendingQuery();
-            return session.askByQueryMode(pending, false);
-        }
-        String reply = RESPONSES[new Random().nextInt(RESPONSES.length)];
-        return new ChatAnswer(0, reply, result);
-    }
-    """
+
     def handle(self, raw_text: str, result: IntentResult, session) -> ChatAnswer:
         logger.debug("[InformHandler] 已记录用户背景信息: " + raw_text)
 
@@ -53,6 +39,7 @@ class InformHandler(IntentHandler):
             # Java: return session.askByQueryMode(pending, false);
             return session.askByQueryMode(pending, False)
 
-        # Java: String reply = RESPONSES[new Random().nextInt(RESPONSES.length)];
-        reply = random.choice(RESPONSES)
+        pool_str = AiConfig.getStringConfig("response.inform.ack", "Got it. Anything else I can help with?")
+        pool = [s.strip() for s in pool_str.split("|") if s.strip()]
+        reply = random.choice(pool)
         return ChatAnswer(code=0, answer=reply)

@@ -83,8 +83,8 @@ def run(base_dir: str) -> None:
     def _dim_suffix(dim: int) -> str:
         return {512: "512", 768: "768", 1024: "1024"}.get(dim, str(dim))
 
-    table_name = "enterprise_knowledge_" + _dim_suffix(dim)
-
+    #table_name = "enterprise_knowledge_" + _dim_suffix(dim)
+    table_name = AiConfig.getStringConfig("db.postgres.table.online", "enterprise_knowledge_1024")
     logger.debug("🚀 模式: " + storage_type + " | 维度: " + str(dim) + " | 表名: " + table_name)
     # ← 加这一行，导入前先清空
     clearDatabase(table_name, db_url, db_user, db_pass)

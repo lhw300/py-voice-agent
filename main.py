@@ -35,7 +35,7 @@ app = FastAPI()
 def startup():
     # Java: SessionManager.init(configPath);
     session_manager.init(config_dir=CONFIG_DIR)
-
+    session_manager.warm_up()
 
 # ---------------------------------------------------------------------------
 # /ai_send — mirrors Java ChatManager.ask() → SessionManager.getSession() → session.ask()

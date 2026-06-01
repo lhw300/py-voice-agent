@@ -6,7 +6,7 @@ from typing import Dict
 from intent.intent_handler import IntentHandler
 from intent.intent_result import IntentResult, Sentiment
 from models import Action, ChatAnswer
-
+import ai_config as AiConfig
 logger = logging.getLogger(__name__)
 
 
@@ -59,21 +59,24 @@ class FeedbackHandler(IntentHandler):
             if count >= self._transfer_threshold:
                 # Java: negCountMap.remove(sid);
                 self._neg_count_map.pop(sid, None)
-                # Java: return ChatAnswer.ofAction(result, ChatAnswer.Action.TRANSFER, "抱歉给您带来极差体验...");
-                return ChatAnswer.of_action(Action.TRANSFER, "抱歉给您带来极差体验，正在为您转接高级专家。")
+                #return ChatAnswer.of_action(Action.TRANSFER, "抱歉给您带来极差体验，正在为您转接高级专家。")
+                text = AiConfig.getStringConfig("response.feedback.negative.transfer", "Connecting you to a staff member now.")
+                return ChatAnswer(code=0, answer=text, action=Action.TRANSFER)
 
-            return ChatAnswer(code=0, answer="非常抱歉让您产生困扰，您的反馈已记录，我会努力改进。")
+            #return ChatAnswer(code=0, answer="非常抱歉让您产生困扰，您的反馈已记录，我会努力改进。")
+            text = AiConfig.getStringConfig("response.feedback.negative", "I'm sorry for the trouble.")
+            return ChatAnswer(code=0, answer=text)
 
         # Java: negCountMap.remove(sid);
         self._neg_count_map.pop(sid, None)
 
-        # Java: if (result.sentiment == IntentResult.Sentiment.POSITIVE)
         if result.sentiment == Sentiment.POSITIVE:
-            return ChatAnswer(code=0, answer="能帮到您真是太好了！我会继续加油的。")
-
-        # Java: return new ChatAnswer(0, "收到您的反馈，感谢您的支持。", result);
-        return ChatAnswer(code=0, answer="收到您的反馈，感谢您的支持。")
+            text = AiConfig.getStringConfig("response.feedback.positive", "Glad I could help!")
+        else:
+            text = AiConfig.getStringConfig("response.feedback.neutral", "Thank you for your feedback.")
+        return ChatAnswer(code=0, answer=text)
 
     def reset_neg_count(self, session_id: str) -> None:
         # Java: public void resetNegCount(String sessionId) { negCountMap.remove(sessionId); }
         self._neg_count_map.pop(session_id, None)
+

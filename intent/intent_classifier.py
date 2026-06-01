@@ -7,6 +7,7 @@ from typing import List, Optional
 from session.chat_history import ChatHistory
 from intent.intent_result import Intent, IntentResult, Sentiment
 from intent.fast_track import fast_track
+import ai_config as AiConfig
 logger = logging.getLogger(__name__)
 
 # Java: private static final int HISTORY_WINDOW = 16;
@@ -109,12 +110,17 @@ class IntentClassifier:
         try:
             # Java: String historyCtx = history.toPlainText(HISTORY_WINDOW);
             historyCtx = self._toPlainText(history, HISTORY_WINDOW)
-
-            # Java: String userPrompt = historyCtx == null || historyCtx.isBlank() ? ... : ...
+            label_input   = AiConfig.getStringConfig("prompt.label.user_input",  "User input:")
+            label_history = AiConfig.getStringConfig("prompt.label.history",     "Conversation history:")
+            label_latest  = AiConfig.getStringConfig("prompt.label.user_latest", "Latest user input:")
             if not historyCtx:
-                userPrompt = "用户输入：" + userText
+                userPrompt = f"{label_input} {userText}"
             else:
-                userPrompt = "对话历史：\n" + historyCtx + "\n用户最新输入：" + userText
+                userPrompt = f"{label_history}\n{historyCtx}\n{label_latest} {userText}"
+            # if not historyCtx:
+            #     userPrompt = "用户输入：" + userText
+            # else:
+            #     userPrompt = "对话历史：\n" + historyCtx + "\n用户最新输入：" + userText
 
             logger.debug("User Input:\n " + userPrompt)
 

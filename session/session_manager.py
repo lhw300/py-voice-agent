@@ -320,7 +320,7 @@ def _init_with_type(type_: str, config_dir: str) -> None:
 
 
     try:
-        logger.debug("📂 [System Init] 正在预加载全局配置文件和知识库...")
+        logger.debug("📂 [System Init] loading configure files and knowledge base...")
 
         # Java: SessionManager.configPath = configPath;
         configPath = config_dir
@@ -372,7 +372,7 @@ def _init_with_type(type_: str, config_dir: str) -> None:
         G_FINAL_LIMIT        = AiConfig.getIntConfig("rag.limit.final_limit", 3)
         G_RERANK_TIMEOUT     = AiConfig.getIntConfig("rag.timeout.rerank", 5)
 
-        logger.info(f"📊 参数初始化完成: SIMILARITY={G_SIMILARITY}, RERANK_TRIGGER_MAX={G_RERANK_TRIGGER_MAX}, RESCUE_SCORE={G_RESCUE_SCORE}")
+        logger.info(f"📊 parameters inited OK: SIMILARITY={G_SIMILARITY}, RERANK_TRIGGER_MAX={G_RERANK_TRIGGER_MAX}, RESCUE_SCORE={G_RESCUE_SCORE}")
 
 
 
@@ -398,8 +398,8 @@ def _init_with_type(type_: str, config_dir: str) -> None:
                 "api.key.qwen", os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY") or ""
             )
             if not GLOBAL_QWEN_KEY:
-                raise RuntimeError("❌ type=qwen 但未设置 api.key.qwen / DASHSCOPE_API_KEY")
-            logger.debug("DEBUG: 读取到的 QWEN_API_KEY 长度 = " + str(len(GLOBAL_QWEN_KEY)))
+                raise RuntimeError("❌ type=qwen not set api.key.qwen / DASHSCOPE_API_KEY")
+            logger.debug("DEBUG:   QWEN_API_KEY len = " + str(len(GLOBAL_QWEN_KEY)))
 
             _client     = OpenAI(api_key=GLOBAL_QWEN_KEY, base_url=ALIYUN_BASE_URL)
             turboClient = LlmClient(_client, model="qwen-plus")
@@ -417,8 +417,8 @@ def _init_with_type(type_: str, config_dir: str) -> None:
                 "api.key.qwen", os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY") or ""
             )
             if not GLOBAL_QWEN_KEY:
-                raise RuntimeError("❌ type=hybrid 但未设置 api.key.qwen / DASHSCOPE_API_KEY")
-            logger.debug("DEBUG: 读取到的 QWEN_API_KEY 长度 = " + str(len(GLOBAL_QWEN_KEY)))
+                raise RuntimeError("❌ type=hybrid not set api.key.qwen / DASHSCOPE_API_KEY")
+            logger.debug("DEBUG: read QWEN_API_KEY len = " + str(len(GLOBAL_QWEN_KEY)))
 
             _client     = OpenAI(api_key=GLOBAL_QWEN_KEY, base_url=ALIYUN_BASE_URL)
             turboClient = LlmClient(_client, model="qwen-turbo")
@@ -477,7 +477,7 @@ def _init_with_type(type_: str, config_dir: str) -> None:
                 "api.key.openai", os.environ.get("OPENAI_API_KEY") or ""
             )
             if not openai_key:
-                raise RuntimeError("❌ type=openai 但未设置 api.key.openai / OPENAI_API_KEY")
+                raise RuntimeError("❌ type=openai not set api.key.openai / OPENAI_API_KEY")
 
             _client    = OpenAI(api_key=openai_key, base_url=OPENAI_BASE_URL)
             miniClient = LlmClient(_client, model="gpt-4o-mini")
@@ -496,9 +496,9 @@ def _init_with_type(type_: str, config_dir: str) -> None:
             logger.debug("✅ [System Init] type=simple — LLM skipped")
 
         else:
-            raise ValueError("不支持的大模型类型: " + type_ + "  支持: qwen / hybrid / openai / simple")
+            raise ValueError("unsupported models: " + type_ + "  support: qwen / hybrid / openai / simple")
         search_init()
-        logger.debug("✅ [System Init] 全局资源加载完成。type=" + type_)
+        logger.debug("✅ [System Init] global resource type=" + type_)
 
         # ── Intent classifier assembly ────────────────────────────────────────
         # Java: if ("simple".equalsIgnoreCase(G_QUERY_MODE)) {
@@ -538,9 +538,9 @@ def _init_with_type(type_: str, config_dir: str) -> None:
         _initialized = True
 
     except Exception as e:
-        logger.error("❌ [System Init] 初始化失败！")
+        logger.error("❌ [System Init] inited failed！")
         logger.error("", exc_info=True)
-        raise RuntimeError("SessionManager 初始化失败") from e
+        raise RuntimeError("SessionManager inited failed") from e
 
 
 # ===========================================================================
@@ -571,7 +571,7 @@ def get_session(session_id: str) -> ChatSession:
     # Java: if (ACTIVE_ROUTER == null) throw new IllegalStateException(...)
     if not _initialized:
         raise RuntimeError(
-            "大模型客户端尚未初始化！请先调用 session_manager.init()"
+            "models client not inited！use session_manager.init()"
         )
 
     with _lock:
@@ -622,7 +622,7 @@ def get_session(session_id: str) -> ChatSession:
             sessions[session_id] = session
 
             # Java: logger.debug("为客户端 [ sn=" + clientId + "] 创建了新会话...");
-            logger.debug("为客户端 [ sn=" + session_id + "] 创建了新会话，并已注入全局 Prompt 和知识库引用。")
+            logger.debug("session [ sn=" + session_id + "] created, injected global Prompt and knowledge")
 
         # Java: lastActiveTime.put(clientId, System.currentTimeMillis());
         lastActiveTime[session_id] = time.time()
@@ -872,20 +872,20 @@ def _loadKnowledgeBase(filePath: str) -> str:
         if content.startswith("\uFEFF"):
             content = content[1:]
 
-        # Java: logger.debug("📚 知识库加载成功: " + filePath + " (长度: " + content.length() + " 字符)");
-        logger.debug(f"📚 知识库加载成功: {filePath} (长度: {len(content)} 字符)")
+        # Java: logger.debug("📚 knowledge loaded OK: " + filePath + " (len: " + content.length() + " )");
+        logger.debug(f"📚 knowledge loaded OK: {filePath} (len: {len(content)} )")
         # Java: return content.trim();
         return content.strip()
 
     # Java: } catch (IOException e) {
     except IOError as e:
         # Java: logger.error("💥 加载知识库时发生 I/O 异常: " + e.getMessage());
-        logger.error("💥 加载知识库时发生 I/O 异常: " + str(e))
+        logger.error("💥 knowledge loaded I/O error: " + str(e))
         return ""
     # Java: } catch (Exception e) {
     except Exception as e:
         # Java: logger.error("💥 加载知识库时发生未知错误: " + e.getMessage());
-        logger.error("💥 加载知识库时发生未知错误: " + str(e))
+        logger.error("💥 knowledge loaded error: " + str(e))
         return ""
 
 

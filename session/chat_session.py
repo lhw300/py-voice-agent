@@ -6,7 +6,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
-
+import ai_config as AiConfig
 from models import ChatAnswer
 from intent.intent_result import Intent, IntentResult
 from session.chat_history import ChatHistory
@@ -229,8 +229,9 @@ class ChatSession:
     """
     def _handleEmptyResult(self, text: str, ca: ChatAnswer) -> ChatAnswer:
         ca.code   = -100
-        ca.answer = "知识库中没有找到任何内容"
-        self._recordHistory(text, "【未匹配到相关知识】", "抱歉，知识库中没有找到任何内容。")
+        #ca.answer = "知识库中没有找到任何内容"
+        ca.answer = AiConfig.getStringConfig("response.fallback.no_knowledge", "No relevant information found.")
+        self._recordHistory(text, "[no_knowledge_match]", ca.answer)
         return ca
 
     """
@@ -243,7 +244,9 @@ class ChatSession:
     """
     def _handleLowSimilarity(self, text: str, ca: ChatAnswer) -> ChatAnswer:
         ca.code   = -101
-        ca.answer = "抱歉，我在知识库中未找到与您问题完全相关的信息。"
+        # ca.answer = "抱歉，我在知识库中未找到与您问题完全相关的信息。"
+        ca.answer = AiConfig.getStringConfig("response.fallback.low_similarity", "I couldn't find a close match.")
+
         return ca
 
     """
@@ -470,12 +473,17 @@ class ChatSession:
             if ans is not None:
                 ca.answer = ans; ca.code = 0
             else:
-                ca.code = -500; ca.answer = "AI 响应为空，请稍后重试。"
+                ca.code = -500;
+                #ca.answer = "AI 响应为空，请稍后重试。"
+                ca.answer = AiConfig.getStringConfig("response.fallback.system_error", "System error, please try again.")
             return ca
 
         except Exception as e:
             logger.error(self.sinfo + "robot system error: " + str(e), exc_info=True)
-            ca.code = -1; ca.answer = "机器人系统故障: " + str(e); return ca
+            ca.code = -1;
+            #ca.answer = "机器人系统故障: " + str(e);
+            ca.answer = AiConfig.getStringConfig("response.fallback.system_error", "System error, please try again.")
+            return ca
 
     """
     /*
@@ -511,7 +519,11 @@ class ChatSession:
         ca = ChatAnswer(code=-1, answer=None)
 
         if not text or not text.strip():
-            ca.code = -1; ca.answer = "客户问题为空"; return ca
+            ca.code = -1;
+            #ca.answer = "客户问题为空";
+            ca.answer = AiConfig.getStringConfig("response.fallback.empty_input", "Input is empty.")
+            return ca
+
 
         processedText = text[:MAX_MESSAGE_LENGTH] if len(text) > MAX_MESSAGE_LENGTH else text
 
@@ -548,12 +560,17 @@ class ChatSession:
             if ans is not None:
                 ca.answer = ans; ca.code = 0
             else:
-                ca.code = -500; ca.answer = "AI 响应为空，请稍后重试。"
+                ca.code = -500;
+                #ca.answer = "AI 响应为空，请稍后重试。"
+                ca.answer = AiConfig.getStringConfig("response.fallback.system_error", "System error, please try again.")
             return ca
 
         except Exception as e:
             logger.error(self.sinfo + str(e), exc_info=True)
-            ca.code = -1; ca.answer = "机器人系统故障"; return ca
+            ca.code = -1;
+            #ca.answer = "机器人系统故障";
+            ca.answer = AiConfig.getStringConfig("response.fallback.system_error", "System error, please try again.")
+            return ca
 
     """
     /*

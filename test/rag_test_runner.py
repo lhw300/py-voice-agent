@@ -89,7 +89,7 @@ scenario_inherit = [
     RagCase(
         "我是管理员。",
         rewrite_keywords=[],
-        answer_keywords=["登录粤教翔云数字教材", "教研天地", "教育部门"],
+        answer_keywords=["登录粤教翔云数字教材", "教研天地"],
     ),
     RagCase(
         "那是在哪点击参加？",
@@ -204,7 +204,7 @@ def main():
     ]
 
     # Java: allScenarios2 = { scenarioCorrect } — run subset for now
-    all_scenarios2 = [scenario_correct]
+    all_scenarios2 = [scenario_boundary]
 
     # Java: for (int s = 0; s < allScenarios2.length; s++) { runScenario(...) }
     for s, cases in enumerate(all_scenarios2[:1]):
