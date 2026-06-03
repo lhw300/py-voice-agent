@@ -80,4 +80,4 @@ async def filling_ai(req: ChatRequest) -> ChatAnswer:
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8010, reload=False)
+    uvicorn.run("main:app", host="0.0.0.0", port=7626, reload=False)

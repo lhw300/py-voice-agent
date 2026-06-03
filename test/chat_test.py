@@ -2,8 +2,8 @@
 # chat_test.py
 import requests
 import random
-
-BASE_URL = "http://localhost:8010"
+from pprint import pprint
+BASE_URL = "http://localhost:7626"
 
 def chat(vo_id: str, text: str, sn: str) -> str:
     url = f"{BASE_URL}/{vo_id}"
@@ -18,6 +18,7 @@ def chat(vo_id: str, text: str, sn: str) -> str:
         "text":       text
     }
     resp = requests.post(url, json=payload)
+    pprint(resp.json())
     if resp.status_code == 200:
         return resp.json().get("answer", "")
     else:

@@ -157,6 +157,13 @@ def _searchTopKnowledge(
 
     vec_str = "[" + ",".join(str(v) for v in vector) + "]"
 
+    use_category = (
+            AiConfig.getStringConfig("query.category.required", "false").lower() == "true"
+            and bool(category_filter)
+    )
+    if not use_category:
+        category_filter = None
+
     # Java: WHERE is_active = true
     # Python: optionally add category filter (field filter not in Java version)
     if category_filter:

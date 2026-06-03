@@ -34,7 +34,7 @@ class QueryHandler(IntentHandler):
     def handle(self, raw_text: str, result: IntentResult, session) -> ChatAnswer:
         logger.debug("[QueryHandler] refinedQuery=" + str(result.refined_query))
 
-        category_required = AiConfig.getBoolConfig("query.category.required", False)
+        category_required = AiConfig.getBooleanConfig("query.category.required", False)
 
         if category_required and session.getCurrentCategory() is None:
             ask_text = AiConfig.getStringConfig(

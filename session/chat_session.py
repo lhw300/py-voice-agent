@@ -350,6 +350,7 @@ class ChatSession:
         self._history_trim(MAX_HISTORY)
 
         ca: ChatAnswer= self.intentDispatcher.dispatch(text, intentResult, self)
+        ca.fill_from_intent(self.currentIntentResult)
 
         t2 = time.time()
         logger.debug(self.sinfo + " [2] Handler elapsed: " + str(int((t2 - t1) * 1000)) + " ms")
@@ -462,9 +463,15 @@ class ChatSession:
 
             filteredContext = self._filterKnowledgeByCategory(self.fulltext, self.currentCategory)
             if not filteredContext or not filteredContext.strip():
-                ca.code = 0
-                ca.answer = "抱歉，我这暂时没有查询到您身份相关的业务说明，请您提供更多信息。"
-                return ca
+                category_required = AiConfig.getStringConfig("query.category.required", "false").lower() == "true"
+                if category_required:
+                    ca.code = 0
+                    ca.answer = AiConfig.getStringConfig("response.fallback.no_category", "I'm sorry, I don't have information on that at the moment. If you'd like to speak with a human agent, just say 'transfer to agent'.")
+                    return ca
+                else:
+                    ca.code = 0
+                    ca.answer = self.fulltext
+                    return ca
 
             chatStart = time.time()
             ans = self._executeFinalChat(filteredContext, "")
@@ -921,11 +928,14 @@ class ChatSession:
 
         chatStart   = time.time()
         jsonPayload = json.dumps(self.history.toJsonArrayWithWindow(), ensure_ascii=False)
-        logger.debug(self.sinfo + "finalAsk context length: " + str(len(jsonPayload)) + " chars")
+        jlen=len(jsonPayload)
+        logger.debug(self.sinfo + "finalAsk context length: " + str(jlen) + " chars, est token="+str(jlen/4))
 
         try:
-            answer = self.router.finalLlm().chat(self.history.toJsonArrayWithWindow()) if self.router else None
-
+            llm_name = "turbo(downgrade)" if len(fullContext) < 800 else "plus"
+            logger.debug(self.sinfo + " finalAsk using: " + llm_name)
+            llm = self.router.rewriter() if len(fullContext) < 800 else self.router.finalLlm()
+            answer = llm.chat(self.history.toJsonArrayWithWindow()) if self.router else None
         except Exception as e:
             logger.error(self.sinfo + "_executeFinalChat error: " + str(e))
             answer = None
@@ -1010,7 +1020,12 @@ class ChatSession:
     @staticmethod
     def _filterKnowledgeByCategory(fulltext: str, category: Optional[str]) -> str:
         if not category or not category.strip():
-            return ""
+            return fulltext  # no category → return full knowledge base
+
+        category_required = AiConfig.getStringConfig("query.category.required", "false").lower() == "true"
+        if not category_required:
+            return fulltext  # flag=false → skip filter, return full
+
         lines = [line for line in fulltext.split("\n") if "||" + category + "||" in line]
         return "\n".join(lines)
 

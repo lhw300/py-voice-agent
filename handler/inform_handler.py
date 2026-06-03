@@ -10,13 +10,6 @@ import ai_config as AiConfig
 logger = logging.getLogger(__name__)
 
 # Java: private static final String[] RESPONSES = { ... };
-RESPONSES = [
-    "好的，我已经记下了。请问还有什么我可以帮您的吗？",
-    "明白了，感谢您告诉我。请问有什么需要进一步了解的吗？",
-    "好的，我知道了。您还有其他问题吗？",
-    "嗯，我记住了。请问接下来有什么需要帮您处理的？",
-    "收到，谢谢您的说明。请问还有什么我能帮到您的？",
-]
 
 
 class InformHandler(IntentHandler):
