@@ -1,6 +1,8 @@
-# LCallAI — Python Voice Agent
+#AI — Python Voice Agent
 
-Python AI agent layer for the LCallAI enterprise call center platform. Handles intent classification, multi-turn dialogue, two-stage RAG retrieval, and L1/L2 semantic caching.
+🌐 **Live Demo**: [lhw300.xyz](https://lhw300.xyz) — try the clinic voice agent live
+
+Python AI agent layer for the enterprise call center platform. Handles intent classification, multi-turn dialogue, two-stage RAG retrieval, and L1/L2 semantic caching.
 
 ---
 
@@ -121,6 +123,21 @@ Three rounds:
 - **Round 1** — warm up: 5 clinic questions go through full RAG pipeline, write K1 + K2
 - **Round 2** — exact repeat: same 5 questions, all should hit K1 (< 2000ms)
 - **Round 3** — paraphrase: 5 rephrased versions in a new session, should hit K1 or K2 via intent rewrite
+
+### Text chat test tool
+
+`chat_test.py` is an interactive command-line tool that sends messages to the running FastAPI agent and prints the AI response. Useful for quick manual testing without a phone or WebRTC client.
+
+```bash
+python test/chat_test.py
+```
+
+Commands during session:
+- Type any message to chat
+- `new` — start a fresh session (new `sn`)
+- `quit` / `exit` — exit
+
+Configure `BASE_URL` and `vo_id` at the top of the file to match your deployment.
 
 ### RAG pipeline test (clinic scenario)
 
