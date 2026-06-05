@@ -56,3 +56,28 @@ class EmbeddingClient:
     """
     def modeType(self) -> str:
         return "local"
+
+class CloudEmbeddingClient:
+    """
+    Cloud embedding via Aliyun text-embedding-v3 (1024-dim)
+    Mirrors Java OllamaClient used as EmbeddingClient
+    """
+    def __init__(self, client, model: str = "text-embedding-v3", dimensions: int = 1024):
+        self._client     = client
+        self._model      = model
+        self._dim        = dimensions
+
+    def embed(self, text: str) -> list:
+        response = self._client.embeddings.create(
+            model=self._model,
+            input=text,
+            dimensions=self._dim,
+            encoding_format="float"
+        )
+        return response.data[0].embedding
+
+    def getDimension(self) -> int:
+        return self._dim
+
+    def modeType(self) -> str:
+        return "cloud"

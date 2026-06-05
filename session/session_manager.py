@@ -407,7 +407,9 @@ def _init_with_type(type_: str, config_dir: str) -> None:
 
             # rerank: LLM-based (turboClient), no local CrossEncoder
             ACTIVE_ROUTER = ModelRouter(turboClient, turboClient, plusClient)
-            ACTIVE_EMBED  = None   # cloud embed via DashScope — RAG to be wired via SearchService
+
+            from search.embedding_client import CloudEmbeddingClient
+            ACTIVE_EMBED = CloudEmbeddingClient(_client, model="text-embedding-v3", dimensions=1024)
             ACTIVE_TABLE  = AiConfig.getStringConfig("db.postgres.table.online", "enterprise_knowledge_qwen_1024")
 
         elif type_.lower() == "hybrid-qwen":
@@ -485,8 +487,9 @@ def _init_with_type(type_: str, config_dir: str) -> None:
 
             # rerank: LLM-based (miniClient), no local CrossEncoder
             ACTIVE_ROUTER = ModelRouter(miniClient, miniClient, gpt4oClient)
-            ACTIVE_EMBED  = None   # cloud embed — text-embedding-3-small (1536-dim)
-            ACTIVE_TABLE  = AiConfig.getStringConfig("db.postgres.table.online", "enterprise_knowledge_openai_1536")
+            from search.embedding_client import CloudEmbeddingClient
+            ACTIVE_EMBED = CloudEmbeddingClient(_client, model="text-embedding-3-small", dimensions=1024)
+            ACTIVE_TABLE  = AiConfig.getStringConfig("db.postgres.table.online", "enterprise_knowledge_openai_1024")
 
         elif type_.lower() == "simple":
             # No LLM — all input treated as QUERY, used for slot-filling / debug
@@ -790,8 +793,8 @@ def warm_up() -> None:
         logger.debug("skip warmup: system.warmup.enabled=false")
         return
 
-    if ACTIVE_ROUTER is None or ACTIVE_EMBED is None:
-        logger.debug("⚠️ warm_up skipped: model clients not yet initialized.")
+    if ACTIVE_ROUTER is None:
+        logger.debug("⚠️ warm_up skipped: ACTIVE_ROUTER not initialized.")
         return
 
     logger.debug("⏳ Starting full pipeline warm-up (rewriter + rerank + finalLlm + embed)...")
@@ -819,12 +822,15 @@ def warm_up() -> None:
     except Exception as e:
         logger.error("⚠️ finalLlm warm-up failed: " + str(e))
 
-    try:
-        t = _time.time()
-        ACTIVE_EMBED.embed("hello")
-        logger.debug("✅ embed warm-up done     t=" + str(int((_time.time() - t) * 1000)) + " ms")
-    except Exception as e:
-        logger.error("⚠️ embed warm-up failed: " + str(e))
+    if ACTIVE_EMBED is not None:
+        try:
+            t = _time.time()
+            ACTIVE_EMBED.embed("hello")
+            logger.debug("✅ embed warm-up done     t=" + str(int((_time.time() - t) * 1000)) + " ms")
+        except Exception as e:
+            logger.error("⚠️ embed warm-up failed: " + str(e))
+    else:
+        logger.debug("⏭️  embed warm-up skipped: ACTIVE_EMBED is None")
 
     logger.debug("✅ full pipeline warm-up complete  total=" + str(int((_time.time() - total_start) * 1000)) + " ms")
 # ===========================================================================

@@ -53,94 +53,95 @@ public static void main(String[] args) throws Exception {
 # ---------------------------------------------------------------------------
 
 def run(base_dir: str) -> None:
-    # Java: AiConfig.init(baseDir);
-    base_dir = base_dir.replace("\\", "/").rstrip("/")
+    import time
+    base_dir      = base_dir.replace("\\", "/").rstrip("/")
     AiConfig.init(base_dir)
 
-    # Java: String storageType = AiConfig.getStringConfig("storage.type", "lucene");
-    storage_type = AiConfig.getStringConfig("storage.type", "online")
-
-    # Java: String rawFilePath = AiConfig.getStringConfig("path.knowledge", "config/publishknowledge.txt");
+    storage_type  = AiConfig.getStringConfig("storage.type", "online")
     raw_file_path = AiConfig.getStringConfig("path.knowledge", "config/publishknowledge.txt")
+    file_path     = str(Path(base_dir) / raw_file_path.lstrip("/"))
 
-    # Java: String filePath = Paths.get(baseDir, rawFilePath).toString();
-
-    file_path = str(Path(base_dir) / raw_file_path.lstrip("/"))
-    # DB connection params from AiConfig
     db_url  = AiConfig.getStringConfig("db.postgres.url",      "jdbc:postgresql://localhost:5432/postgres")
     db_user = AiConfig.getStringConfig("db.postgres.user",     "postgres")
     db_pass = AiConfig.getStringConfig("db.postgres.password", "call")
 
-    logger.debug("🚀 启动知识库导入流水线...storageType " + storage_type + " filePath " + file_path)
+    logger.debug("🚀 Starting ingestion pipeline... type=" + storage_type + " file=" + file_path)
 
-    # Java: EmbeddingClient embedClient = SessionManager.createQwenTurboClient();
-    # Python: use EmbeddingClient (local) or cloud embed via LlmClient
     embed_client = _create_embed_client(base_dir)
+    dim          = embed_client.getDimension()
 
-    # Java: tableName = "enterprise_knowledge_" + (dim == 768 ? "768" : "qwen_1024");
-    dim        = embed_client.getDimension()
+    # Warm up the embedding client to avoid slow first call
+    logger.debug("⏳ Warming up embedding client...")
+    t_warm = time.time()
+    embed_client.embed("warm up")
+    logger.debug("✅ Embedding warm-up done  t=" + str(int((time.time() - t_warm) * 1000)) + "ms")
 
-    def _dim_suffix(dim: int) -> str:
-        return {512: "512", 768: "768", 1024: "1024"}.get(dim, str(dim))
+    # Warm up embedding client
+    logger.debug("⏳ Warming up embedding client...")
+    t_warmup = time.time()
+    embed_client.embed("warm up")
+    logger.debug("✅ Embedding warm-up done  t=" + str(int((time.time() - t_warmup) * 1000)) + "ms")
 
-    #table_name = "enterprise_knowledge_" + _dim_suffix(dim)
-    table_name = AiConfig.getStringConfig("db.postgres.table.online", "enterprise_knowledge_1024")
-    logger.debug("🚀 模式: " + storage_type + " | 维度: " + str(dim) + " | 表名: " + table_name)
-    # ← 加这一行，导入前先清空
+    table_name   = AiConfig.getStringConfig("db.postgres.table.online", "enterprise_knowledge_1024")
+    logger.debug("🚀 Mode: " + storage_type + " | dim: " + str(dim) + " | table: " + table_name)
+
     clearDatabase(table_name, db_url, db_user, db_pass)
-    # Java: 根据后缀名选择读取办法
+
     if file_path.lower().endswith(".txt"):
         entries = _readFromTxt(file_path)
     elif file_path.lower().endswith((".xlsx", ".xls")):
         entries = _readFromExcel(file_path)
     else:
-        logger.error("❌ 不支持的文件格式，仅限 .txt 或 .xlsx")
+        logger.error("❌ Unsupported file format, only .txt or .xlsx")
         return
 
-    logger.debug("📂 正在解析文件: " + file_path + "，共 " + str(len(entries)) + " 条")
+    logger.debug("📂 Total entries: " + str(len(entries)) + "")
+
+    run_type = AiConfig.getStringConfig("system.run.type", "hybrid-qwen").lower()
 
     success_count = 0
+    total_start   = time.time()
+
     for i, entry in enumerate(entries):
-        # Java: if ("ID".equalsIgnoreCase(entry.id)) continue;
         if entry.id.upper() == "ID":
             continue
 
-        # Java: 截断保护与数据清洗
-        raw_category = entry.category.strip() if entry.category else "未分类"
-        raw_summary  = entry.summary.strip()  if entry.summary  else "无摘要"
-        content      = entry.content.strip()  if entry.content  else ""
+        category = (entry.category.strip() if entry.category else "Uncategorized")[:50]
+        summary  = (entry.summary.strip()  if entry.summary  else "No summary")[:255]
+        content  = _cleanContent(entry.content) if entry.content else ""
 
         if not content:
-            logger.debug("⚠️ 第 " + str(i + 1) + " 条记录内容为空，已跳过")
+            logger.debug("⚠️ Entry " + str(i + 1) + " has empty content, skipped")
             continue
 
-        # Java: category = rawCategory.length() > 50 ? rawCategory.substring(0, 50) : rawCategory;
-        category = raw_category[:50]
-        summary  = raw_summary[:255]
-
         logger.debug("--------------------------------------------------")
-        logger.debug("🔍 正在处理第 " + str(i + 1) + " 条数据:")
-        logger.debug("   [分类]: " + category)
-        logger.debug("   [摘要]: " + summary)
-        logger.debug("   [内容长度]: " + str(len(content)) + " 字")
+        logger.debug("🔍 [" + str(i + 1) + "] category=" + category + "  summary=" + summary)
 
         try:
-            # Java: String semanticText = String.format("分类：【%s】。摘要：%s。内容：%s", ...)
-            semantic_text = "分类：【" + category + "】。摘要：" + summary + "。内容：" + content
+            if run_type in ("qwen", "openai"):
+                semantic_text = f"Category: [{category}]. Summary: {summary}. Content: {content}"
+            else:
+                semantic_text = f"Category: [{category}]. Summary: {summary}. Content: {content}"
 
-            # Java: double[] vector = embedClient.embed(semanticText);
+            t0     = time.time()
             vector = embed_client.embed(semantic_text)
+            embed_ms = int((time.time() - t0) * 1000)
 
-            # Java: upsertToDatabase(tableName, entry, vector);
+            t1 = time.time()
             _upsertToDatabase(table_name, entry, vector, db_url, db_user, db_pass)
+            db_ms = int((time.time() - t1) * 1000)
 
-            logger.debug("   ✅ ID [" + entry.id + "] 处理成功 (Insert/Update)")
+            logger.debug("   ✅ ID [" + entry.id + "]  embed=" + str(embed_ms)
+                         + "ms  db=" + str(db_ms) + "ms")
             success_count += 1
 
         except Exception as e:
-            logger.error("   ❌ ID [" + entry.id + "] 失败: " + str(e))
+            logger.error("   ❌ ID [" + entry.id + "] failed: " + str(e))
 
-    logger.debug("✨ 导入完成！共成功处理 " + str(success_count) + " 条知识。")
+    total_ms = int((time.time() - total_start) * 1000)
+    logger.debug("✨ Import complete! success: " + str(success_count) + " / " + str(len(entries))
+                 + "  total=" + str(total_ms) + "ms"
+                 + "  avg=" + str(total_ms // max(success_count, 1)) + "ms/entry")
 
 
 # ---------------------------------------------------------------------------
@@ -313,12 +314,49 @@ def _cleanContent(raw: str) -> str:
 
 
 def _create_embed_client(base_dir: str):
-    """Build EmbeddingClient from AiConfig — mirrors SessionManager.createQwenTurboClient() logic."""
-    from search.embedding_client import EmbeddingClient
-    embed_name = AiConfig.getStringConfig("djl.model.embed.name",
-                                          "text2vec-base-chinese-paraphrase-pt")
-    model_path = str(Path(base_dir) / embed_name)
-    return EmbeddingClient(model_path)
+    """
+    Build EmbeddingClient based on system.run.type:
+      qwen        → CloudEmbeddingClient (Aliyun text-embedding-v3, 1024-dim)
+      openai      → CloudEmbeddingClient (OpenAI text-embedding-3-small, 1024-dim)
+      hybrid-qwen → EmbeddingClient (local bge-large, path from config)
+      others      → EmbeddingClient (local, path from config)
+    """
+    run_type = AiConfig.getStringConfig("system.run.type", "hybrid-qwen").lower()
+
+    if run_type == "qwen":
+        from openai import OpenAI
+        from search.embedding_client import CloudEmbeddingClient
+        qwen_key = AiConfig.getStringConfig("api.key.qwen",
+                                            os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY") or "")
+        if not qwen_key:
+            raise RuntimeError("❌ system.run.type=qwen but api.key.qwen not set")
+        client = OpenAI(
+            api_key=qwen_key,
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+        )
+        logger.debug("🌐 CloudEmbeddingClient: Aliyun text-embedding-v3 (1024-dim)")
+        return CloudEmbeddingClient(client, model="text-embedding-v3", dimensions=1024)
+
+    elif run_type == "openai":
+        from openai import OpenAI
+        from search.embedding_client import CloudEmbeddingClient
+        openai_key = AiConfig.getStringConfig("api.key.openai",
+                                              os.environ.get("OPENAI_API_KEY") or "")
+        if not openai_key:
+            raise RuntimeError("❌ system.run.type=openai but api.key.openai not set")
+        client = OpenAI(api_key=openai_key)
+        logger.debug("🌐 CloudEmbeddingClient: OpenAI text-embedding-3-small (1024-dim)")
+        return CloudEmbeddingClient(client, model="text-embedding-3-small", dimensions=1024)
+
+    else:
+        # hybrid-qwen, hybrid-openai, etc. — local model
+        from search.embedding_client import EmbeddingClient
+        embed_name = AiConfig.getStringConfig("djl.model.embed.name",
+                                              "text2vec-base-chinese-paraphrase-pt")
+        model_path = str(Path(base_dir) / embed_name)
+        logger.debug("💻 EmbeddingClient: local model " + model_path)
+        return EmbeddingClient(model_path)
+
 
 
 # ---------------------------------------------------------------------------

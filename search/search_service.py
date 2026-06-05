@@ -217,6 +217,33 @@ def shutdown() -> None:
     _initialized = False
     logger.debug("🌙 资源已关闭")
 
+def _create_embed_client(base_dir: str):
+    run_type = AiConfig.getStringConfig("system.run.type", "hybrid-qwen").lower()
+
+    if run_type == "qwen":
+        from openai import OpenAI
+        from search.embedding_client import CloudEmbeddingClient
+        qwen_key = AiConfig.getStringConfig("api.key.qwen", "")
+        client = OpenAI(
+            api_key=qwen_key,
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+        )
+        return CloudEmbeddingClient(client, model="text-embedding-v3")
+
+    elif run_type == "openai":
+        from openai import OpenAI
+        from search.embedding_client import CloudEmbeddingClient
+        openai_key = AiConfig.getStringConfig("api.key.openai", "")
+        client = OpenAI(api_key=openai_key)
+        return CloudEmbeddingClient(client, model="text-embedding-3-small")  # 1536维
+
+    else:
+        from search.embedding_client import EmbeddingClient
+        embed_name = AiConfig.getStringConfig("djl.model.embed.name",
+                                              "text2vec-base-chinese-paraphrase-pt")
+        model_path = str(Path(base_dir) / embed_name)
+        return EmbeddingClient(model_path)
+
 # ── Test entry point ──────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import sys, os

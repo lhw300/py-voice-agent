@@ -280,7 +280,7 @@ def main():
     ]
     all_scenarios = [
 
-        scenario_ivr_2,
+        scenario_patient,
 
     ]
 
