@@ -24,7 +24,7 @@ from search.embedding_client   import EmbeddingClient
 from intent.intent_classifier  import IntentClassifier, SimpleIntentClassifier
 
 from search.search_service import init as search_init
-
+from search import cache_service
 # ===========================================================================
 # LlmClient — mirrors Java interface com.lcallai.LlmClient
 #
@@ -58,7 +58,8 @@ class LlmClient:
     # Java: public String generate(String systemPrompt, String userPrompt)
     def generate(self, system_prompt: str, user_prompt: str) -> str:
         logger.debug("generate send to AI url=" + str(self._client.base_url) + " model=" + self._model)
-        logger.debug("system_prompt=" + system_prompt[:80])
+        #logger.debug("system_prompt=" + system_prompt[:80])
+        AiConfig.log(logger, "log.prompt.preview.chars", "system_prompt", system_prompt)
         #logger.debug("user_prompt=" + user_prompt)
         resp = self._client.chat.completions.create(
             model=self._model,
@@ -75,7 +76,7 @@ class LlmClient:
 
     def chat(self, messages: list) -> str:
         logger.debug("chat send to AI url=" + str(self._client.base_url) + " model=" + self._model)
-        logger.debug("messages=\n" + str(messages))
+        AiConfig.log(logger, "log.messages.chars", "messages", str(messages))
         resp = self._client.chat.completions.create(
             model=self._model,
             messages=messages,
@@ -535,8 +536,10 @@ def _init_with_type(type_: str, config_dir: str) -> None:
         intentDispatcher.register(Intent.CHITCHAT, ChitchatHandler(globalChitchatPrompt))
         ACTIVE_INTENT_DISPATCHER = intentDispatcher
 
+        cache_service.init(config_dir)
         # Java: startAutoCleanup();
         startAutoCleanup()
+
 
         _initialized = True
 

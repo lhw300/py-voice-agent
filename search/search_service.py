@@ -102,13 +102,18 @@ def getRelevantKnowledge(
     embed_client,
     category_filter: Optional[str] = None,
     limit: int = 15,
+        vector: Optional[List[float]] = None,
 ) -> List[KnowledgeItem]:
     init()
 
     # Java: Step 1 — 向量化
     start_embed = time.time()
-    vector = embed_client.embed(query)
-    logger.debug("Step 1: Embedding took: " + str(int((time.time() - start_embed) * 1000)) + " ms")
+    if vector is None:
+        start_embed = time.time()
+        vector = embed_client.embed(query)
+        logger.debug("Step 1: new Embedding took: " + str(int((time.time() - start_embed) * 1000)) + " ms")
+    else:
+        logger.debug("Step 1: existing Embedding took: " + str(int((time.time() - start_embed) * 1000)) + " ms")
 
     # Java: Step 2 — pgvector 检索
     start_search = time.time()

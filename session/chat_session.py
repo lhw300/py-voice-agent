@@ -10,7 +10,7 @@ import ai_config as AiConfig
 from models import ChatAnswer
 from intent.intent_result import Intent, IntentResult
 from session.chat_history import ChatHistory
-
+from search.cache_service import convert, k1_get, k1_put, k2_get, k2_put
 logger = logging.getLogger(__name__)
 
 # Java: private static final int MAX_HISTORY        = 60;
@@ -337,6 +337,8 @@ class ChatSession:
 
         self.currentIntentResult = intentResult
         self.lastRawText         = text
+
+
         logger.debug(self.sinfo + "[intentResult]= " + str(intentResult))
         logger.debug(self.sinfo + "[Intent] " + str(intentResult.intent) + " | Refined: " + str(intentResult.refined_query))
 
@@ -348,6 +350,22 @@ class ChatSession:
 
         self._history_add("user", userMsg)
         self._history_trim(MAX_HISTORY)
+
+        # K1 exact cache lookup — QUERY only
+        if intentResult.intent == Intent.QUERY:
+            query_key = intentResult.refined_query or text
+            cached = k1_get(query_key)
+            if cached:
+                logger.debug(self.sinfo + "[K1] cache hit, skip RAG")
+                ca = ChatAnswer(**cached)
+                ca.fill_from_intent(self.currentIntentResult)
+                if ca.answer and ca.answer.strip():
+                    self._history_add("assistant", ca.answer)
+                    self._history_trim(MAX_HISTORY)
+                return ca
+
+
+
 
         ca: ChatAnswer= self.intentDispatcher.dispatch(text, intentResult, self)
         ca.fill_from_intent(self.currentIntentResult)
@@ -532,6 +550,17 @@ class ChatSession:
             return ca
 
 
+        norm   = convert(text)
+        vector = self.embeddingClient.embed(norm)
+
+        # K2 semantic cache lookup
+        cached = k2_get(norm, vector)
+        if cached:
+            logger.debug(self.sinfo + "[K2] cache hit, skip RAG")
+            ca = ChatAnswer(**cached)
+            ca.fill_from_intent(self.currentIntentResult)   # ← 加这行
+            return ca
+
         processedText = text[:MAX_MESSAGE_LENGTH] if len(text) > MAX_MESSAGE_LENGTH else text
 
         try:
@@ -541,13 +570,16 @@ class ChatSession:
                 optimizedQuery = self._performQueryRewrite(processedText)
             logger.debug(self.sinfo + "rewrite elapsed=" + str(int((time.time() - requeryStart) * 1000)) + " ms")
 
-            finalItems = self._performTwoStageRetrievalAsyncBatch(optimizedQuery)
+            #finalItems = self._performTwoStageRetrievalAsyncBatch(optimizedQuery)
+            finalItems = self._performTwoStageRetrievalAsyncBatch(optimizedQuery, vector)
 
-            logger.debug(self.sinfo + "🔍 candidate list after two-stage retrieval:")
-            for item in finalItems:
-                logger.debug(self.sinfo + "distance: " + self.formatDouble(item.get("distance", 0))
-                             + " category:" + str(item.get("category"))
-                             + " | summary: " + str(item.get("summary")))
+            max_c = AiConfig.getIntConfig("log.candidates.max", 3)
+            if max_c > 0:
+                logger.debug(self.sinfo + "🔍 candidate list after two-stage retrieval:")
+                for item in finalItems[:max_c]:
+                    logger.debug(self.sinfo + "distance: " + self.formatDouble(item.get("distance", 0))
+                                 + " category:" + str(item.get("category"))
+                                 + " | summary: " + str(item.get("summary")))
 
             if not finalItems:
                 return self._handleEmptyResult(processedText, ca)
@@ -561,20 +593,27 @@ class ChatSession:
                     + "-" + str(item.get("summary", "")) + "】" + str(item.get("content", ""))
                 )
             fullCtx = "\n".join(fullCtx_parts)
-            logger.debug(self.sinfo + "executeFinalChat fullCtx: " + fullCtx)
+
+            AiConfig.log(logger, "log.fullctx.chars", "executeFinalChat fullCtx", fullCtx, self.sinfo)
 
             ans = self._executeFinalChat(fullCtx, "")
             if ans is not None:
-                ca.answer = ans; ca.code = 0
+                ca.answer = ans
+                ca.code = 0
+                k1_put(norm, ca.model_dump())
+                k2_put(norm, vector, ca.model_dump())
             else:
-                ca.code = -500;
+                ca.code = -500
                 #ca.answer = "AI 响应为空，请稍后重试。"
                 ca.answer = AiConfig.getStringConfig("response.fallback.system_error", "System error, please try again.")
+
+
+
             return ca
 
         except Exception as e:
             logger.error(self.sinfo + str(e), exc_info=True)
-            ca.code = -1;
+            ca.code = -1
             #ca.answer = "机器人系统故障";
             ca.answer = AiConfig.getStringConfig("response.fallback.system_error", "System error, please try again.")
             return ca
@@ -619,7 +658,7 @@ class ChatSession:
      * }
      */
     """
-    def _performTwoStageRetrievalAsyncBatch(self, query: str) -> List[dict]:
+    def _performTwoStageRetrievalAsyncBatch(self, query: str, vector: list[float] = None) -> List[dict]:
         """
         Batch rerank variant of _performTwoStageRetrievalAsync.
         Replaces thread-pool parallel rerank with a single batch inference call
@@ -630,9 +669,13 @@ class ChatSession:
 
         queryStart = _time.time()
 
+
+
         allCandidates = getRelevantKnowledge(
             self.tableName, query, self.embeddingClient,
-            category_filter=self.currentCategory
+            category_filter=self.currentCategory,
+            limit=15,
+            vector=vector,
         )
 
         if not allCandidates:
@@ -640,9 +683,10 @@ class ChatSession:
 
         logger.debug(self.sinfo + "🔍 vector search elapsed="
                      + str(int((_time.time() - queryStart) * 1000)) + " ms")
-        for item in allCandidates:
-            logger.debug(self.sinfo + "dist: " + self.formatDouble(item.distance)
-                         + " category: " + str(item.category) + " | summary: " + str(item.summary))
+        max_c = AiConfig.getIntConfig("log.candidates.max", 3)
+        for item in (allCandidates[:max_c] if max_c > 0 else []):
+            logger.debug(self.sinfo + "distance: " + self.formatDouble(item.distance)
+                     + " category: " + str(item.category) + " | summary: " + str(item.summary))
 
         if self.queryMode and self.queryMode.lower() == "retrieveonly":
             logger.debug(self.sinfo + "⚠️ retrieveOnly mode, skip rerank, return vector results directly.")
@@ -658,6 +702,7 @@ class ChatSession:
                 fastTrackItems.append(item)
             elif item.distance < self.rerankTriggerMax:
                 slowPool.append(item)
+
 
         if len(fastTrackItems) >= 1:
             logger.debug(self.sinfo + "🚀 fast-track fired, skip rerank.")
@@ -726,7 +771,8 @@ class ChatSession:
 
         logger.debug(self.sinfo + "🔍 coarse-ranking candidates from getRelevantKnowledge, elapsed="
                      + str(int((_time.time() - queryStart) * 1000)) + " ms")
-        for item in allCandidates:
+        max_c = AiConfig.getIntConfig("log.candidates.max", 3)
+        for item in (allCandidates[:max_c] if max_c > 0 else []):
             logger.debug(self.sinfo + "distance: " + self.formatDouble(item.distance)
                          + " category: " + str(item.category) + " | summary: " + str(item.summary))
 
@@ -740,13 +786,12 @@ class ChatSession:
         fastTrackItems = []
         slowPool       = []
 
-        # Java: for (KnowledgeItem item : allCandidates) { if (distance < trustThreshold) ... }
         for item in allCandidates:
-            if item.distance < self.trustThreshold:  # 0.25 — absolute trust, skip rerank
+            if item.distance < self.trustThreshold:
                 logger.debug(self.sinfo + "absolute trust, direct hit, distance: "
                              + self.formatDouble(item.distance) + " | summary: " + str(item.summary))
                 fastTrackItems.append(item)
-            elif item.distance < self.rerankTriggerMax:  # 0.6 — uncertain, send to rerank pool
+            elif item.distance < self.rerankTriggerMax:
                 slowPool.append(item)
 
         # Java: if (fastTrackItems.size() >= 1) return fastTrackItems.subList(0, 3);
@@ -941,7 +986,8 @@ class ChatSession:
             answer = None
 
         logger.debug(self.sinfo + " finalAsk elapsed: " + str(int((time.time() - chatStart) * 1000)) + " ms")
-        logger.debug(self.sinfo + " AI response:\n" + str(answer))
+
+        AiConfig.log(logger, "log.ai.response.chars", "AI response", str(answer), self.sinfo)
         return answer
 
     # Java: private void recordQueryHistory_nouse(...) — dead code stub

@@ -223,3 +223,14 @@ def getBooleanConfig(key: str, defaultValue: bool) -> bool:
         return defaultValue
     # Java: return v.equalsIgnoreCase("true") || v.equalsIgnoreCase("1") || v.equalsIgnoreCase("yes");
     return v.strip().lower() in ("true", "1", "yes")
+def log(logger, key: str, label: str, text: str, sinfo: str = "") -> None:
+    """
+    Conditional logger controlled by ai.conf.
+    key   : config key, e.g. "log.fullctx.chars"
+    label : log prefix, e.g. "fullCtx"
+    text  : content to log
+    sinfo : session info prefix (optional)
+    """
+    n = getIntConfig(key, 0)
+    if n > 0:
+        logger.debug(sinfo + label + ": " + str(text)[:n])

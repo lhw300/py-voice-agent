@@ -122,13 +122,14 @@ class IntentClassifier:
             # else:
             #     userPrompt = "对话历史：\n" + historyCtx + "\n用户最新输入：" + userText
 
-            logger.debug("User Input:\n " + userPrompt)
+            #logger.debug("User Input:\n " + userPrompt)
+            AiConfig.log(logger, "log.intent.input.chars", "User Input", userPrompt)
 
             # Java: String raw = llmClient.generate(this.systemPrompt, userPrompt);
 
             raw = self.llmClient.generate(self.systemPrompt, userPrompt)
-            logger.debug("AI response:\n " + raw)
-
+            #logger.debug("AI response:\n " + raw)
+            AiConfig.log(logger, "log.ai.response.chars", "AI response", raw)
             return self._parse(raw, userText)
 
         except Exception as e:

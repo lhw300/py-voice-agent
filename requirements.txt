@@ -6,3 +6,4 @@ requests
 sentence-transformers
 psycopg2-binary
 openpyxl
+redis
