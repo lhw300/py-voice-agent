@@ -70,7 +70,7 @@ _initialized:    bool = False
 
 _redis_available: bool = False
 _config_dir: str = "e:/ai"
-
+_cache_ttl_seconds: int = 0  # 0 = no TTL
 def init(config_dir: str = "e:/ai") -> None:
     """
     Call once on application startup.
@@ -78,11 +78,16 @@ def init(config_dir: str = "e:/ai") -> None:
     If Redis is unavailable, cache is silently disabled — RAG continues normally.
     Idempotent.
     """
-    global _initialized, _redis_available
+    global _initialized, _redis_available,_config_dir,_cache_ttl_seconds
     if _initialized:
         return
     _config_dir = config_dir
     logger.debug("[cache] init start ...")
+
+    days = AiConfig.getIntConfig("cache.ttl.days", 0)
+    _cache_ttl_seconds = days * 86400
+    logger.debug(f"[cache] TTL={'no expiry' if _cache_ttl_seconds == 0 else str(days) + ' days'}")
+
     _load_convert_rules()
     try:
         r = _get_redis()
@@ -149,14 +154,9 @@ def k1_get(question: str) -> Optional[dict]:
     return None
 
 
-def k1_put(question: str, chat_answer) -> None:
-    """
-    Write a ChatAnswer to K1 after RAG pipeline completes.
-    Accepts ChatAnswer instance or plain dict.
-    Evicts oldest entry when LRU cap is exceeded.
-    """
+def k1_put(question: str, chat_answer, permanent: bool = False) -> None:
     if not _redis_available:
-        return None   # 或 return（put函数）
+        return
     norm = convert(question)
     if not norm:
         return
@@ -165,17 +165,20 @@ def k1_put(question: str, chat_answer) -> None:
     r   = _get_redis()
     cap = AiConfig.getIntConfig("k1.lru.max", 1000)
     try:
-        payload = _serialize_answer(chat_answer)
+        d = _to_dict(chat_answer)
+        d["question"] = norm          # ← 注入问题文本
+        payload = json.dumps(d, ensure_ascii=False)
         pipe = r.pipeline()
-        pipe.set(key, payload)
+        if permanent or _cache_ttl_seconds == 0:
+            pipe.set(key, payload)
+        else:
+            pipe.set(key, payload, ex=_cache_ttl_seconds)
         pipe.zadd(_K1_INDEX, {h: time.time()})
         pipe.execute()
         _evict(r, _K1_INDEX, _PREFIX_K1, cap)
-        logger.debug(f"[K1] put   hash={h}  q={norm[:50]}")
+        logger.debug(f"[K1] put{'(permanent)' if permanent else ''}  hash={h}  q={norm[:50]}")
     except Exception as e:
         logger.warning(f"[K1] put error: {e}")
-
-
 # ===========================================================================
 # K2 — semantic match
 # ===========================================================================
@@ -234,7 +237,7 @@ def k2_get(norm: str, vector: list[float]) -> Optional[dict]:
     return None
 
 
-def k2_put(norm: str, vector: list[float], chat_answer) -> None:
+def k2_put(norm: str, vector: list[float], chat_answer, permanent: bool = False) -> None:
     """
     Write a ChatAnswer + its embedding vector to K2 after RAG pipeline.
     Evicts oldest entry when LRU cap is exceeded.
@@ -270,6 +273,10 @@ def k2_put(norm: str, vector: list[float], chat_answer) -> None:
         }
         pipe = r.pipeline()
         pipe.hset(k2_key, mapping=fields)
+
+        if not permanent and _cache_ttl_seconds > 0:
+            pipe.expire(k2_key, _cache_ttl_seconds)
+
         pipe.zadd(_K2_INDEX, {eid: time.time()})
         pipe.execute()
         _evict(r, _K2_INDEX, _PREFIX_K2, cap)
@@ -408,7 +415,73 @@ def _k2_raw_to_answer(raw: dict) -> dict:
         }
     }
 
+def warmup(config_dir: str) -> None:
+    import session.session_manager as sm
 
+    faq_path = os.path.join(config_dir,
+                            AiConfig.getStringConfig("redis.faq.file", "config/redis_faq_health.txt"))
+
+    if not os.path.exists(faq_path):
+        logger.warning(f"[cache] warmup faq file not found: {faq_path}")
+        return
+
+    try:
+        _get_redis().flushdb()
+        logger.debug("[cache] Redis flushed before warmup")
+    except Exception as e:
+        logger.warning(f"[cache] flush failed: {e}")
+
+    # parse FAQ entries
+    entries = []
+    current_q, current_a = [], ""
+    with open(faq_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("Q:"):
+                current_q = [v.strip() for v in line[2:].strip().split("|") if v.strip()]
+            elif line.startswith("A:"):
+                current_a = line[2:].strip()
+                if current_q and current_a:
+                    entries.append((current_q, current_a))
+                current_q, current_a = [], ""
+
+    total_q = sum(len(e[0]) for e in entries)
+    logger.debug(f"[cache] warmup start: {len(entries)} entries, {total_q} questions")
+
+    success = 0
+    for questions, faq_answer in entries:
+        answer_dict = {
+            "code"         : 0,
+            "answer"       : faq_answer,
+            "action"       : "NONE",
+            "hit_source"   : "k1",
+            "intent_result": {}
+        }
+
+        # K1 — write each Q variant, skip duplicates
+        seen_hashes = set()
+        for q in questions:
+            norm = convert(q)
+            h    = _make_hash(norm)
+            if h in seen_hashes:
+                logger.debug(f"[warmup] skip duplicate  hash={h}  q={q[:40]}")
+                continue
+            seen_hashes.add(h)
+            k1_put(norm, answer_dict, permanent=True)
+            success += 1
+
+        # K2 — one representative vector per entry
+        rep_q  = next((q for q in questions if "?" in q), questions[0])
+        norm   = convert(rep_q)
+        try:
+            vector = sm.ACTIVE_EMBED.embed(norm)
+            k2_put(norm, vector, answer_dict, permanent=True)
+        except Exception as e:
+            logger.warning(f"[cache] warmup k2 embed failed: {rep_q[:40]} — {e}")
+
+    logger.debug(f"[cache] warmup complete: {success} K1 written, {len(entries)} K2 written")
 def _vector_to_bytes(vector: list[float]) -> bytes:
     """Encode float list as raw bytes (4 bytes per float, little-endian)."""
     import struct

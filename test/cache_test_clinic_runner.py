@@ -3,12 +3,6 @@
 # K1 / K2 cache integration test.
 # All queries go through session.ask() — no direct cache calls.
 #
-# Timing thresholds:
-#   K1 hit : intent(~1000ms) + K1(~1ms)              ≈ 1100ms
-#   K2 hit : intent(~1000ms) + embed(~300ms) + K2     ≈ 1400ms
-#   RAG    : intent(~1000ms) + embed + rerank + LLM   ≈ 3500ms+
-#   → cache hit threshold: < 2000ms
-#
 # Run:
 #   python test/test_cache_runner.py [config_path]
 # ---------------------------------------------------------------------------
@@ -34,16 +28,6 @@ logger = logging.getLogger(__name__)
 
 import session.session_manager as session_manager
 
-# ---------------------------------------------------------------------------
-# Threshold: responses under this ms are considered cache hits
-# ---------------------------------------------------------------------------
-CACHE_HIT_MS = 2000
-
-# ---------------------------------------------------------------------------
-# Round 1 — first ask, all go to RAG, write K1 + K2
-# Round 2 — exact same questions, expect K1 hit
-# Round 3 — paraphrased questions (new session), expect K2 hit
-# ---------------------------------------------------------------------------
 QUESTIONS = [
     "What are your clinic hours?",
     "Can I get a prescription refill by phone?",
@@ -61,13 +45,11 @@ PARAPHRASES = [
 ]
 
 
-def _ask(session, question: str) -> tuple[int, str]:
-    """Returns (elapsed_ms, answer)."""
+def _ask(session, question: str) -> tuple[int, str, str]:
     t0 = time.time()
     ca = session.ask(question)
     elapsed = int((time.time() - t0) * 1000)
-    answer = ca.answer or ""
-    return elapsed, answer
+    return elapsed, ca.answer or "", getattr(ca, "hit_source", "rag")
 
 
 def run(config_dir: str) -> None:
@@ -79,68 +61,109 @@ def run(config_dir: str) -> None:
 
     pass_count = 0
     fail_count = 0
+    k1_count   = 0
+    k2_count   = 0
+    rag_count  = 0
+    k1_times   = []
+    k2_times   = []
+    rag_times  = []
+    test_start = time.time()
 
     # ------------------------------------------------------------------
-    # Round 1 — first ask, expect RAG (slow)
+    # Round 1 — warm up cache
     # ------------------------------------------------------------------
-    logger.debug("\n── Round 1: first ask (expected: RAG, slow) ──")
+    logger.debug("\n── Round 1: warm up cache ──")
     session1 = session_manager.get_session("cache_test_s1")
     for q in QUESTIONS:
-        elapsed, answer = _ask(session1, q)
-        is_rag = elapsed >= CACHE_HIT_MS
-        status = "PASS" if is_rag else "WARN"
-        logger.debug(f"  [{status}] elapsed={elapsed}ms  Q: {q}")
-        logger.debug(f"          A: {answer[:70]}...")
-        if is_rag:
-            pass_count += 1
+        elapsed, answer, hit_source = _ask(session1, q)
+        if hit_source == "k1":
+            k1_count += 1
+            k1_times.append(elapsed)
+            label = "K1 HIT"
+        elif hit_source == "k2":
+            k2_count += 1
+            k2_times.append(elapsed)
+            label = "K2 HIT"
         else:
-            fail_count += 1
+            rag_count += 1
+            rag_times.append(elapsed)
+            label = "RAG"
+        logger.debug(f"  [{label}] elapsed={elapsed}ms  Q: {q}")
+        logger.debug(f"          A: {answer[:70]}...")
 
     # ------------------------------------------------------------------
-    # Round 2 — exact repeat, expect K1 hit (fast)
+    # Round 2 — exact repeat, expect K1 hit
     # ------------------------------------------------------------------
-    logger.debug("\n── Round 2: exact repeat (expected: K1 hit, fast) ──")
+    logger.debug("\n── Round 2: exact repeat (expected: K1 hit) ──")
     session2 = session_manager.get_session("cache_test_s2")
     for q in QUESTIONS:
-        elapsed, answer = _ask(session2, q)
-        is_hit = elapsed < CACHE_HIT_MS
-        status = "PASS" if is_hit else "FAIL"
-        label  = "K1 HIT" if is_hit else "K1 MISS"
+        elapsed, answer, hit_source = _ask(session2, q)
+        if hit_source in ("k1", "k2"):
+            k1_count += 1
+            k1_times.append(elapsed)
+            pass_count += 1
+            status = "PASS"
+            label  = hit_source.upper() + " HIT"
+        else:
+            rag_count += 1
+            rag_times.append(elapsed)
+            fail_count += 1
+            status = "FAIL"
+            label  = "RAG"
         logger.debug(f"  [{status}] [{label}] elapsed={elapsed}ms  Q: {q}")
         if answer:
             logger.debug(f"          A: {answer[:70]}...")
-        if is_hit:
-            pass_count += 1
-        else:
-            fail_count += 1
 
     # ------------------------------------------------------------------
-    # Round 3 — paraphrased, new session, expect K2 hit (fast)
+    # Round 3 — paraphrased, expect K2 (or K1 via rewrite)
     # ------------------------------------------------------------------
-    logger.debug("\n── Round 3: paraphrase / new session (expected: K2 hit, fast) ──")
+    logger.debug("\n── Round 3: paraphrase / new session (expected: K2 hit) ──")
     session3 = session_manager.get_session("cache_test_s3")
     for q in PARAPHRASES:
-        elapsed, answer = _ask(session3, q)
-        is_hit = elapsed < CACHE_HIT_MS
-        status = "PASS" if is_hit else "FAIL"
-        label  = "K2 HIT" if is_hit else "MISS"
+        elapsed, answer, hit_source = _ask(session3, q)
+        if hit_source == "k1":
+            k1_count += 1
+            k1_times.append(elapsed)
+            pass_count += 1
+            status = "PASS"
+            label  = "K1 HIT"
+        elif hit_source == "k2":
+            k2_count += 1
+            k2_times.append(elapsed)
+            pass_count += 1
+            status = "PASS"
+            label  = "K2 HIT"
+        else:
+            rag_count += 1
+            rag_times.append(elapsed)
+            fail_count += 1
+            status = "FAIL"
+            label  = "RAG"
         logger.debug(f"  [{status}] [{label}] elapsed={elapsed}ms  Q: {q}")
         if answer:
             logger.debug(f"          A: {answer[:70]}...")
-        if is_hit:
-            pass_count += 1
-        else:
-            fail_count += 1
 
     # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------
-    total     = pass_count + fail_count
-    pass_rate = pass_count / total * 100 if total else 0
+    total_elapsed = int((time.time() - test_start) * 1000)
+    total         = pass_count + fail_count
+    pass_rate     = pass_count / total * 100 if total else 0
+    total_qs      = k1_count + k2_count + rag_count
+    hit_rate      = (k1_count + k2_count) / total_qs * 100 if total_qs else 0
+
+    def avg(lst): return int(sum(lst) / len(lst)) if lst else 0
 
     logger.debug("\n" + "=" * 60)
-    logger.debug(f"Total: {total}  PASS: {pass_count}  FAIL: {fail_count}")
-    logger.debug(f"Pass rate: {pass_rate:.1f}%")
+    logger.debug("Cache Hit Summary")
+    logger.debug(f"  K1 hits : {k1_count:3d}   avg {avg(k1_times):5d}ms")
+    logger.debug(f"  K2 hits : {k2_count:3d}   avg {avg(k2_times):5d}ms")
+    logger.debug(f"  RAG     : {rag_count:3d}   avg {avg(rag_times):5d}ms")
+    logger.debug("-" * 60)
+    logger.debug(f"  Total questions : {total_qs}")
+    logger.debug(f"  Cache hit rate  : {hit_rate:.1f}%  (K1+K2 / total)")
+    logger.debug(f"  PASS/FAIL       : {pass_count} / {fail_count}   ({pass_rate:.1f}%)")
+    logger.debug(f"  Total elapsed   : {total_elapsed}ms")
     logger.debug("=" * 60)
 
 

@@ -61,7 +61,7 @@ class ChatAnswer(BaseModel):
     refined_query: Optional[str]  = None   # rewritten query shown to client
     category:      Optional[str]  = None   # knowledge category matched
     sentiment:     Optional[str]  = None   # POSITIVE / NEGATIVE / NEUTRAL
-
+    hit_source: str = "rag"
     # =========================================================================
     # Instance methods — Java: shouldTerminate / needsTts / isNegativeFeedback
     # =========================================================================

@@ -359,6 +359,7 @@ class ChatSession:
                 logger.debug(self.sinfo + "[K1] cache hit, skip RAG")
                 ca = ChatAnswer(**cached)
                 ca.fill_from_intent(self.currentIntentResult)
+                ca.hit_source = "k1"
                 if ca.answer and ca.answer.strip():
                     self._history_add("assistant", ca.answer)
                     self._history_trim(MAX_HISTORY)
@@ -539,6 +540,15 @@ class ChatSession:
      * }
      */
     """
+    def _is_fallback(self, answer: str) -> bool:
+        if not answer:
+            return True
+        a = answer.lower()
+        keywords = AiConfig.getStringConfig(
+            "cache.fallback.keywords",
+            "i don't have information|i'm sorry, i don't have|no relevant information|i couldn't find"
+        )
+        return any(kw.strip().lower() in a for kw in keywords.split("|"))
     def askRerank(self, text: str, isrewrite: bool = False) -> ChatAnswer:
         logger.debug(self.sinfo + "🚀 executing advanced RAG pipeline (refactored ask3)...isrewrite " + str(isrewrite))
         ca = ChatAnswer(code=-1, answer=None)
@@ -558,7 +568,8 @@ class ChatSession:
         if cached:
             logger.debug(self.sinfo + "[K2] cache hit, skip RAG")
             ca = ChatAnswer(**cached)
-            ca.fill_from_intent(self.currentIntentResult)   # ← 加这行
+            ca.fill_from_intent(self.currentIntentResult)
+            ca.hit_source = "k2"
             return ca
 
         processedText = text[:MAX_MESSAGE_LENGTH] if len(text) > MAX_MESSAGE_LENGTH else text
@@ -600,8 +611,9 @@ class ChatSession:
             if ans is not None:
                 ca.answer = ans
                 ca.code = 0
-                k1_put(norm, ca.model_dump())
-                k2_put(norm, vector, ca.model_dump())
+                if not self._is_fallback(ans):
+                    k1_put(norm, ca.model_dump())
+                    k2_put(norm, vector, ca.model_dump())
             else:
                 ca.code = -500
                 #ca.answer = "AI 响应为空，请稍后重试。"
@@ -633,6 +645,8 @@ class ChatSession:
      * }
      */
     """
+
+
     def _performQueryRewrite(self, text: str) -> str:
         historyContextStr = self._toPlainText(MAX_QUERY_HISTORY)
         if not historyContextStr.strip() or not self.rewrite_prompt:

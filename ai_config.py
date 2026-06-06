@@ -140,7 +140,13 @@ def reload() -> None:
 # Java: }
 # ---------------------------------------------------------------------------
 def _get(key: str) -> Optional[str]:
-    return configMap.get(key)
+    v = configMap.get(key)
+    if v is None:
+        return None
+    # strip inline comments
+    if "#" in v:
+        v = v[:v.index("#")]
+    return v.strip() or None
 
 
 # ---------------------------------------------------------------------------
