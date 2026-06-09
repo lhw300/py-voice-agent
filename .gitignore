@@ -4,16 +4,26 @@
 # 2. 允许目录结构
 !*/
 
-# 3. 白名单
+# 3. 白名单 (基础文件类型)
 !*.java
 !*.py
 !*.xml
-
+!*.txt
 !README.md
 !README_EN.md
 !.gitignore
 !aiknowledge.txt
-!*.txt
+
+# ==========================================
+# 新增：显式放行整个 config 核心配置目录及其内部所有文件
+# ==========================================
+# 先允许 Git 扫描 config 文件夹本身
+!config/
+# 再允许 Git 扫描 config 目录下的所有子文件夹结构
+!config/**/
+# 最后精准放行 config 目录下所有层级的 .txt 和 .conf 文件
+!config/**/*.txt
+!config/**/*.conf
 
 # 4. CI 相关
 !.github/
@@ -21,6 +31,7 @@
 !ci-config-template/
 !ci-config-template/**.idea
 
+# 5. 显式黑名单（即便符合白名单也要强制忽略的文件）
 git-command.txt
 maven-linux命令.txt
 ollama.txt

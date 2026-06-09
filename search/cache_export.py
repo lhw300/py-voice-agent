@@ -88,7 +88,7 @@ def export(config_dir: str, output_file: str = None):
 
 
 if __name__ == "__main__":
-    config_path = "e:/ai"
+    config_path = "E:\EIT\py-LLM-integration"
     output_path = None
 
     args = sys.argv[1:]

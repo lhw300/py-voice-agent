@@ -1,0 +1,87 @@
+# redis_faq_health.txt
+#
+# K1/K2 Warmup FAQ — Clinic Knowledge Base
+#
+# Format:
+#   Q: keyword|Complete question sentence?|...
+#   A: Standard TTS-friendly answer (numbers in words, short sentences)
+#
+# Warmup flow:
+#   Each Q variant → k1_put_permanent + k2_put_permanent → write K1+K2 directly
+#   No RAG, no LLM — human-curated answers only
+# ===========================================================================
+
+# 1. Clinic Hours & Holidays
+Q: clinic hours|office hours|opening hours|What are your clinic hours?|When are you open?|What time do you open?|What time do you close?|Are you open on weekends?|Are you open on holidays?
+A: Our clinic is open Monday to Friday, nine AM to five PM. We are closed on weekends and all BC statutory holidays. Please note that phones are unmonitored during lunch, from noon to one PM.
+
+# 2. Doctor's Note / Sick Note
+Q: doctor's note|sick note|medical certificate|I need a doctor's note for work.|Can I get a sick note?|How do I get a note for school?|Do you charge for a doctor's note?|Can I get a backdated sick note?
+A: To get a doctor's note, you must book an appointment on the exact day of your illness. We cannot issue backdated sick notes. Please note there is a thirty dollar private fee, as this service is not covered by MSP.
+
+# 3. Lab Results Inquiry
+Q: lab results|blood test results|test results|When will my lab results be ready?|Did my blood test come back?|How do I check my test results?|Will you call me about my results?|Where can I see my results online?
+A: We will only call you if your results show abnormal findings that require follow-up. If your results are normal, you will not receive a call. You can check your results anytime online via MyCareCompass.
+
+# 4. Prescription Refills
+Q: prescription refill|medication refill|renew prescription|Can I get a prescription refill by phone?|How do I renew my medication?|Can I refill my prescription without an appointment?|My pharmacy needs a refill authorization.|Can I request a refill online?
+A: We do not accept over-the-phone prescription refills. Please ask your pharmacy to fax a refill request directly to our clinic. Alternatively, you can book a brief telehealth appointment to speak with the doctor.
+
+# 5. Specialist Referrals
+Q: specialist referral|referral status|chasing referral|Has my referral been sent?|How long does a referral take?|Can I check my referral status?|I'm still waiting for my specialist appointment.|When will I hear back about my referral?
+A: Triage times are determined entirely by the specialist's office, and it usually takes two to four weeks. Please do not worry — we will notify you as soon as we receive your appointment date from them.
+
+# 6. Running Late Policy
+Q: running late|late for appointment|late policy|I'm running late for my appointment.|What happens if I'm late?|Will I still be seen if I'm a few minutes late?|I'm going to be fifteen minutes late, is that okay?
+A: If you are running more than ten minutes late, you may be asked to resubmit for a same-day urgent slot, or reschedule to another day. This helps us avoid disrupting other patients.
+
+# 7. Telehealth vs In-Person
+Q: virtual appointment|phone appointment|telehealth|Can I do a phone appointment instead of coming in?|Is a video call available?|Can I see the doctor online?|What can be done over the phone?|Do I have to come in person?
+A: Virtual phone appointments are for reviewing stable chronic conditions or test results only. If you have new symptoms, physical pain, or need a prescription for a controlled substance, you must book an in-person visit.
+
+# 8. Emergency Protocol
+Q: emergency|chest pain|shortness of breath|heavy bleeding|urgent medical help|I have severe chest pain, what should I do?|I can't breathe properly, should I call you?|This is a medical emergency.|Is this something I should go to the ER for?
+A: If you are experiencing a medical emergency such as severe chest pain, shortness of breath, sudden weakness, or heavy bleeding, please hang up immediately and dial nine one one, or go directly to the nearest Emergency Room.
+
+# 9. New Patients Waitlist
+Q: new patient|accepting new patients|family doctor waitlist|register new patient|Are you accepting new patients?|Can I register as a new patient?|How do I get a family doctor?|I don't have a family doctor, can I sign up?
+A: We are currently not accepting new patients. We highly recommend registering on the BC Health Connect Registry to be placed on the centralized waitlist for a family doctor.
+
+# 10. Cancellation & No-Show Policy
+Q: cancel appointment|reschedule appointment|cancellation policy|no show fee|How do I cancel my appointment?|Can I reschedule my appointment?|What happens if I miss my appointment?|Is there a cancellation fee?
+A: You must give at least twenty-four hours notice to cancel or reschedule. Missing your appointment without notice will result in a fee of forty to eighty dollars, which must be paid before your next visit.
+
+# 11. Uninsured Services Fees
+Q: uninsured services|driver medical form|insurance paperwork|forms fee|private fee|Do you charge for insurance forms?|Is a driver's medical exam covered by MSP?|How much does it cost to fill out insurance paperwork?|Are travel vaccines covered?
+A: Services such as driver's medical forms, insurance paperwork, and travel immunizations are not covered by MSP. These private fees must be paid by cash or debit before the forms can be completed.
+
+# 12. Out-of-Province / Non-Residents
+Q: non resident|out of province|no msp card|tourist|private consultation fee|I don't have a BC MSP card, can I still be seen?|How much does it cost if I'm from out of province?|I'm visiting from another province, do you take me?|What if I'm a tourist without insurance?
+A: Patients without a valid BC MSP card will be charged a private consultation fee of one hundred to one hundred and fifty dollars at check-in. We will provide a receipt that you can submit to your private insurance.
+
+# 13. Walk-in Appointments
+Q: walk in|walk-in appointment|without appointment|drop in|Can I walk in without an appointment?|Do you accept walk-ins?|Do I need to book ahead?|Can I just come in?|Are walk-in slots available today?
+A: Yes, we do accept walk-in patients. Walk-in slots open at nine AM daily. Due to high demand, we may stop accepting walk-ins early if we reach capacity. We recommend calling ahead to check availability.
+
+# 14. How to Book an Appointment
+Q: book appointment|make appointment|schedule appointment|How do I book an appointment?|Can I book online?|How do I schedule a visit?|What is the fastest way to book?|Can I call to make an appointment?
+A: The fastest way to book is through our online patient portal, available twenty-four seven. You can also call our reception desk during clinic hours. Please have your CareCard and Personal Health Number ready.
+
+# 15. Same-Day Urgent Appointments
+Q: same day appointment|urgent slot|sick today|acute illness|I need to see a doctor today.|Can I get an urgent appointment?|I woke up feeling really sick, can I come in?|Are there any slots available for today?
+A: We release a limited number of same-day urgent slots every morning at nine AM for acute non-life-threatening illnesses. These are allocated on a first-come first-served basis, available by phone or online.
+
+# 16. Booking Appointments for Dependents
+Q: book for child|book for family|dependent appointment|book for someone else|Can I book an appointment for my child?|How do I make an appointment for my elderly parent?|Can I schedule on behalf of a family member?|Do I need their health card to book for them?
+A: When booking for a family member, please make sure the appointment is created under their individual name and CareCard number, not the primary account holder's name.
+
+# 17. Clinic Location
+Q: clinic location|where are you|how do i get there|Where is the clinic located?|What is your address?|How do I get to the clinic?|Where is your office?
+A: Our clinic is located on Road three in Richmond, British Columbia.  
+# 18. Clinic Website & Portal
+Q: clinic website|patient portal|online portal|website url|What is your website address?|How do I access the patient portal?|Where can I download intake forms?|Can I book online through your website?
+A: You can visit our official website at harvey clinic dot com to access the patient portal, book appointments, or download intake forms.
+
+# 19. Parking
+Q: parking|where can i park|is there parking|Where can I park when I come in?|Is there parking available?|Do you have a parking lot?|Is parking free?
+A: On-site parking is available for patients, with designated stalls right near the main entrance of the clinic on Road three in Richmond.

@@ -364,7 +364,8 @@ class ChatSession:
                     self._history_add("assistant", ca.answer)
                     self._history_trim(MAX_HISTORY)
                 return ca
-
+            else:
+                logger.debug(self.sinfo + "[K1] NO cache hit")
 
 
 
@@ -541,6 +542,7 @@ class ChatSession:
      */
     """
     def _is_fallback(self, answer: str) -> bool:
+        logger.debug(self.sinfo + "_is_fallback checking... "+answer)
         if not answer:
             return True
         a = answer.lower()
@@ -571,7 +573,8 @@ class ChatSession:
             ca.fill_from_intent(self.currentIntentResult)
             ca.hit_source = "k2"
             return ca
-
+        else:
+            logger.debug(self.sinfo + "[K2] No cache hit ")
         processedText = text[:MAX_MESSAGE_LENGTH] if len(text) > MAX_MESSAGE_LENGTH else text
 
         try:
@@ -612,7 +615,9 @@ class ChatSession:
                 ca.answer = ans
                 ca.code = 0
                 if not self._is_fallback(ans):
+                    logger.debug(self.sinfo + "[K1] put... ")
                     k1_put(norm, ca.model_dump())
+                    logger.debug(self.sinfo + "[K2] put... ")
                     k2_put(norm, vector, ca.model_dump())
             else:
                 ca.code = -500

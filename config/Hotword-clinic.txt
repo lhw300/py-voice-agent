@@ -1,0 +1,156 @@
+MSP
+PHN
+CareCard
+MyCareCompass
+MyHealth
+Medeo
+BC Health Connect Registry
+Doctor's Note
+Sick Note
+Lab Results
+Prescription Refills
+Telehealth
+Walk-in
+WAlkin
+Same-Day Urgent
+Specialist Referrals
+Triage
+911
+Emergency Room
+Chest pain
+Shortness of breath
+Retroactive
+Out-of-Province
+Uninsured Services
+No-Show
+Driver's Medical
+Insurance Paperwork
+Travel Immunizations
+Statutory Holidays
+Clinic Hours
+Appointment Booking
+Fax Refills
+Controlled Substances
+Physical Exam
+Chronic Conditions
+Test Results
+Abnormal Findings
+Imaging Reports
+Online Portal
+Reception Desk
+Personal Health Number
+Acute Illness
+High Fever
+First-Come First-Served
+Dependents
+Elderly Parents
+CareCard Number
+Primary Account Holder
+Cancellation Policy
+Reschedule
+24 Hours Notice
+Private Fees
+Cash Payment
+Debit Payment
+BC MSP Card
+Tourists
+Private Consultation Fee
+Private Insurance
+Receipt
+Maximum Capacity
+Call Ahead
+Check Availability
+Stable Conditions
+New Symptoms
+Physical Pain
+Infections
+Medical Emergency
+Severe Chest Pain
+Sudden Weakness
+Heavy Bleeding
+Nearest Emergency Room
+Family Doctor
+Centralized Waitlist
+Register
+Missing Appointment
+Paid Before Next Visit
+Forms Completion
+Non-Residents
+Valid BC MSP
+Time of Check-in
+Daily Walk-in Slots
+High Demand
+Later in the Day
+Online Booking
+24/7 Access
+Fastest Method
+Limited Number
+Morning Release
+Allocated
+Phone Booking
+Family Members
+Children
+Individual Name
+BC Statutory Holidays
+Lunch Hour
+Phones Unmonitored
+12 PM to 1 PM
+Monday to Friday
+9 AM to 5 PM
+Weekends Closed
+Work or School
+Day of Illness
+$30 Fee
+Not Covered
+Normal Results
+Will Not Receive Call
+Over-the-Phone
+Pharmacy Fax
+Brief Telehealth
+Appointment Date
+Status Check
+Specialist's Office
+2 to 4 Weeks
+Notify You
+10 Minutes Late
+Resubmit Request
+Urgent Slot
+Disrupting Other Patients
+Virtual Phone Appointments
+Reviewing Results
+In-Person Exam
+Severe Symptoms
+Life-Threatening
+Hang Up Immediately
+Dial 911
+Proceed to ER
+Currently Not Accepting
+New Patients Waitlist
+Centralized Registry
+Placed on Waitlist
+At Least 24 Hours
+Failure to Provide
+$40 to $80 Fee
+Must Be Paid
+Next Visit
+Paperwork Completion
+Payable by Cash
+Before Forms
+Without Valid MSP
+Charged at Check-in
+$100 to $150
+Receipt Issued
+Accept Walk-ins
+Stop Accepting Early
+Reach Maximum
+Recommend Calling
+Through Online Portal
+Alternative Method
+During Clinic Hours
+Have Your PHN Ready
+Non-Life-Threatening
+Every Morning
+Via Phone or Online
+Book for Family
+Created Under Their Name
+Not Primary Holder

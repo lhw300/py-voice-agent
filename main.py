@@ -26,7 +26,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Config directory — matches Java: SessionManager.init(baseDir)
-CONFIG_DIR = os.environ.get("AI_CONFIG_DIR", "e:/ai")
+CONFIG_DIR = os.environ.get("AI_CONFIG_DIR", "E:\EIT\py-LLM-integration")
 
 app = FastAPI()
 

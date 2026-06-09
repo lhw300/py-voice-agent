@@ -1,0 +1,30 @@
+
+# ===========================================================================
+# 粤教翔云 3.0 Convert Mapping Table — Strict Standard (Aligned with FAQ)
+#
+# Rules:
+#    - Left side: Spoken variants from ASR (User input).
+#    - Right side: Standardized anchors strictly existing in your FAQ data.
+# ===========================================================================
+
+# ===========================================================================
+# 1. Action & Keyword Standardization (Aligned with FAQ Sections 1-10)
+# ===========================================================================
+
+
+# ---- 主观赘述 / 习惯性垫话 (Redundant Modifiers) ----
+其实                              ->
+实际上                            ->
+说白了                            ->
+简单来说                          ->
+具体来说                          ->
+总的来说                          ->
+一般来说                          ->
+换句话说                          ->
+怎么说呢                          ->
+差不多                            ->
+也就是说                          ->
+我是说		->
+
+
+ 

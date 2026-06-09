@@ -17,7 +17,7 @@ client = OpenAI(
 # 读取prompt文件
 #PROMPT_PATH = r"e:\AI\config\prompt_internet_repair.txt"
 # 获取配置目录，Linux 会拿到 /home/ubuntu/ai，Windows 拿不到变量则降级用 e:\ai
-config_dir = os.environ.get("AI_CONFIG_DIR", r"e:\ai")
+config_dir = os.environ.get("AI_CONFIG_DIR", r"E:\EIT\py-LLM-integration")
 
 # 自动适配系统的路径分隔符（Linux 用 /，Windows 用 \）
 PROMPT_PATH = os.path.join(config_dir, "config", "prompt_internet_repair.txt")

@@ -1,0 +1,178 @@
+# redis_convert_health.txt
+#
+# K1 Convert Mapping Table — Strict Clinical Standardization (Aligned with FAQ)
+#
+# Rules:
+#    - Word Boundary Match (\b) is highly recommended in implementation.
+#    - Left side: Spoken variants from ASR.
+#    - Right side: Standardized keywords mapped 1:1 to FAQ anchors.
+# ===========================================================================
+
+# ===========================================================================
+# 1. Action & Keyword Standardization (Aligned with FAQ Sections 1-18)
+# ===========================================================================
+
+# 1. Clinic Hours
+opening hours            -> clinic hours
+office hours             -> clinic hours
+business hours           -> clinic hours
+working hours            -> clinic hours
+
+# 2. Doctor's Note (Fixed!)
+sick note                -> doctor's note
+note for work            -> doctor's note
+note for school          -> doctor's note
+medical certificate      -> doctor's note
+fit to work note         -> doctor's note
+
+# 3. Lab Results
+blood work               -> lab results
+blood test               -> lab results
+lab test                 -> lab results
+lab work                 -> lab results
+get my blood drawn       -> lab results
+
+# 4. Prescription Refills
+get a refill             -> prescription refill
+get my refill            -> prescription refill
+refill my prescription   -> prescription refill
+renew my prescription    -> prescription refill
+renew my medication      -> prescription refill
+repeat prescription      -> prescription refill
+prescription renewal     -> prescription refill
+need more pills          -> prescription refill
+
+# 5. Specialist Referrals
+check my referral        -> specialist referral
+referral status          -> specialist referral
+referral update          -> specialist referral
+chasing referral         -> specialist referral
+
+# 6. Running Late
+i'm late for my appointment -> running late
+late policy              -> running late
+what if i am late        -> running late
+
+# 7. Telehealth vs In-Person
+phone appointment        -> virtual appointment
+phone consultation       -> virtual appointment
+telephone appointment    -> virtual appointment
+video appointment        -> virtual appointment
+online appointment       -> virtual appointment
+telemedicine             -> virtual appointment
+telehealth               -> virtual appointment
+
+# 8. Emergency Protocol
+urgent care              -> emergency
+really urgent            -> emergency
+kind of urgent           -> emergency
+chest pain               -> emergency
+heavy bleeding           -> emergency
+shortness of breath      -> emergency
+
+# 9. New Patients Waitlist
+register as new patient  -> new patient
+are you accepting new patients -> new patient
+sign up family doctor    -> new patient
+family doctor waitlist   -> new patient
+first time patient       -> new patient
+never been here before   -> new patient
+
+# 10. Cancellation & No-Show
+change my appointment    -> cancel appointment
+move my appointment      -> cancel appointment
+reschedule my appointment -> cancel appointment
+postpone my appointment  -> cancel appointment
+no show fee              -> cancel appointment
+cancellation policy      -> cancel appointment
+
+# 11. Uninsured Services Fees
+driver's medical form    -> uninsured services
+insurance paperwork      -> uninsured services
+travel immunization      -> uninsured services
+forms fee                -> uninsured services
+
+# 12. Out-of-Province / Non-Residents
+out of province patient  -> non resident
+no msp card              -> non resident
+tourist medical fee      -> non resident
+private patient cost     -> non resident
+
+ 
+# 13. Walk-in Appointments (Fixed Symbol!)
+do you take walk ins     -> walk-in appointments
+can i just walk in       -> walk-in appointments
+without appointment      -> walk-in appointments
+walk ins slots           -> walk-in appointments
+
+# 14. How to Book an Appointment
+how to book              -> book appointment
+make an appointment      -> book appointment
+schedule an appointment  -> book appointment
+arrange an appointment   -> book appointment
+
+# 15. Same-Day Urgent Appointments
+urgent slot              -> same day appointment
+book today               -> same day appointment
+sick today               -> same day appointment
+acute illness slot       -> same day appointment
+
+# 16. Booking Appointments for Dependents
+book for my child        -> book for family
+book for my parents      -> book for family
+dependent appointment    -> book for family
+family booking           -> book for family
+book for someone else    -> book for family
+
+# 17. Clinic Location & Parking
+where are you            -> clinic location
+where is the clinic      -> clinic location
+how do i get there       -> clinic location
+where can i park         -> clinic location
+is there parking         -> clinic location
+
+# 18. Clinic Website & Portal
+website url              -> clinic website
+patient portal           -> clinic website
+online link              -> clinic website
+download forms           -> clinic website
+
+
+# ===========================================================================
+# 2. Spoken Noise Removal (STRICT MODE - Executed LAST)
+# ===========================================================================
+um                       ->
+uh                       ->
+umm                      ->
+uhh                      ->
+hmm                      ->
+hm                       ->
+er                       ->
+err                      ->
+ah                       ->
+you know                 ->
+you know what i mean     ->
+if that makes sense      ->
+if you know what i mean  ->
+basically                ->
+essentially              ->
+literally                ->
+actually                 ->
+honestly                 ->
+frankly                  ->
+to be honest             ->
+to be fair               ->
+to be honest with you    ->
+truth be told            ->
+at the end of the day    ->
+long story short         ->
+anyway                   ->
+anyways                  ->
+so yeah                  ->
+yeah so                  ->
+right so                 ->
+so basically             ->
+so like                  ->
+well                     ->
+okay so                  ->
+ok so                    ->

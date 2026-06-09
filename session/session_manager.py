@@ -542,6 +542,10 @@ def _init_with_type(type_: str, config_dir: str) -> None:
 
 
         _initialized = True
+        logger.debug("cache.warmup.on_start=" + str(AiConfig.getBooleanConfig("cache.warmup.on_start", False)))
+        if AiConfig.getBooleanConfig("cache.warmup.on_start", False):
+            from search.cache_service import warmup
+            warmup(config_dir)
 
     except Exception as e:
         logger.error("❌ [System Init] inited failed！")

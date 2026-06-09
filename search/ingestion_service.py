@@ -61,7 +61,7 @@ def run(base_dir: str) -> None:
     raw_file_path = AiConfig.getStringConfig("path.knowledge", "config/publishknowledge.txt")
     file_path     = str(Path(base_dir) / raw_file_path.lstrip("/"))
 
-    db_url  = AiConfig.getStringConfig("db.postgres.url",      "jdbc:postgresql://localhost:5432/postgres")
+    db_url  = AiConfig.getStringConfig("db.postgres.url",      "jdbc:postgresql://127.0.0.1:5432/postgres")
     db_user = AiConfig.getStringConfig("db.postgres.user",     "postgres")
     db_pass = AiConfig.getStringConfig("db.postgres.password", "call")
 
@@ -365,5 +365,5 @@ def _create_embed_client(base_dir: str):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG,
                         format="%(asctime)s %(levelname)s %(message)s")
-    base = sys.argv[1] if len(sys.argv) > 1 else "e:\\ai"
+    base = sys.argv[1] if len(sys.argv) > 1 else "E:\EIT\py-LLM-integration"
     run(base)

@@ -53,7 +53,7 @@ def init() -> None:
         return
 
     # Java: AiConfig.getStringConfig("db.postgres.url", "jdbc:postgresql://localhost:5432/postgres")
-    url      = AiConfig.getStringConfig("db.postgres.url",      "jdbc:postgresql://localhost:5432/postgres")
+    url      = AiConfig.getStringConfig("db.postgres.url",      "jdbc:postgresql://127.0.0.1:5432/postgres")
     user     = AiConfig.getStringConfig("db.postgres.user",     "postgres")
     password = AiConfig.getStringConfig("db.postgres.password", "call")
     max_conn = AiConfig.getIntConfig("db.postgres.pool.max",    10)

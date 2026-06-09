@@ -122,7 +122,9 @@ def convert(text: str) -> str:
         t = pattern.sub(repl, t)
     t = re.sub(r"[，。！？、；：""''（）《》【】,.!?;:\"'()\[\]{}<>~`@#$%^&*_+=|\\/-]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
-    return t
+    # (Fallback)
+    return t if t else text.strip()
+
 
 
 # ===========================================================================
@@ -510,7 +512,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
 # ===========================================================================
 # Self-test: python search/cache_service.py
 # ===========================================================================
-if __name__ == "__main__":
+if __name__ == "__main__2":
     import random
     logging.basicConfig(level=logging.DEBUG,
                         format="%(asctime)s [%(levelname)s] %(message)s")
@@ -678,3 +680,240 @@ if __name__ == "__main__":
     dissimilar = fake_vec(99)
     hit = k2_get("some random query", dissimilar)
     print(f"  [{'HIT ' if hit else 'MISS'}] dissimilar vector (expected MISS)")
+
+if __name__ == "__main__":
+    import math
+    import random
+    import logging
+
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+    )
+
+    # ── 配置 ────────────────────────────────────────────────────────────
+    AiConfig.configMap = {
+        "base.dir":                "e:/ai",
+        "redis.host":              "localhost",
+        "redis.port":              "6379",
+        "redis.db":                "0",
+        "redis.convert.file":      "config/redis_convert_health.txt",
+        "k1.lru.max":              "1000",
+        "k2.lru.max":              "500",
+        "k2.similarity.threshold": "0.90",
+    }
+
+    init()
+
+    # ── 知识库：粤教翔云 FAQ ────────────────────────────────────────────
+    # 每条 entry = (representative_question, norm_key, ChatAnswer)
+    faq: list[tuple[str, str, dict]] = [
+        (
+            "老师的电脑配置是什么",
+            "teacher client system requirements",
+            {
+                "code": 0,
+                "answer": "电脑客户端要求Windows 7或以上的操作系统。不支持在任何手机或平板设备（如 iPad）上安装使用。",
+                "action": "NONE",
+                "intent_result": {
+                    "intent": "QUERY", "sentiment": "NEUTRAL",
+                    "sub_intent": None, "action_code": None,
+                    "refined_query": "teacher client system requirements",
+                    "category": "system",
+                },
+            },
+        ),
+        (
+            "老师的账号是多少",
+            "teacher account password",
+            {
+                "code": 0,
+                "answer": "账号为个人身份证号码，初始密码为大写A202101小写b。若忘记密码，可在登录页面点击忘记密码通过手机接收验证码重置。",
+                "action": "NONE",
+                "intent_result": {
+                    "intent": "QUERY", "sentiment": "NEUTRAL",
+                    "sub_intent": None, "action_code": None,
+                    "refined_query": "teacher account password",
+                    "category": "account",
+                },
+            },
+        ),
+        (
+            "什么是云教案",
+            "cloud lesson plan feature",
+            {
+                "code": 0,
+                "answer": "是以教案为单位，将课件、数字教材、碎片资源、小测等组合在一起的数字化备课功能。",
+                "action": "NONE",
+                "intent_result": {
+                    "intent": "QUERY", "sentiment": "NEUTRAL",
+                    "sub_intent": None, "action_code": None,
+                    "refined_query": "cloud lesson plan feature",
+                    "category": "feature",
+                },
+            },
+        ),
+        (
+            "学生的电脑配置是什么",
+            "student client system requirements",
+            {
+                "code": 0,
+                "answer": "电脑客户端支持Windows 7或以上，安卓客户端支持安卓6.0版本或以上，苹果客户端支持iOS 13或以上的系统。",
+                "action": "NONE",
+                "intent_result": {
+                    "intent": "QUERY", "sentiment": "NEUTRAL",
+                    "sub_intent": None, "action_code": None,
+                    "refined_query": "student client system requirements",
+                    "category": "system",
+                },
+            },
+        ),
+        (
+            "学生的账号是什么",
+            "student account password",
+            {
+                "code": 0,
+                "answer": "个人账号是学生的个人身份证号码，初始密码是向大写A202101小写b。",
+                "action": "NONE",
+                "intent_result": {
+                    "intent": "QUERY", "sentiment": "NEUTRAL",
+                    "sub_intent": None, "action_code": None,
+                    "refined_query": "student account password",
+                    "category": "account",
+                },
+            },
+        ),
+        (
+            "学生忘记密码怎么办",
+            "student forgot password reset",
+            {
+                "code": 0,
+                "answer": "若没绑定手机号，需联系本班教师或学校管理员重置密码；若已绑定手机号，可通过登录页面点击忘记密码自助重置。",
+                "action": "NONE",
+                "intent_result": {
+                    "intent": "QUERY", "sentiment": "NEUTRAL",
+                    "sub_intent": None, "action_code": None,
+                    "refined_query": "student forgot password reset",
+                    "category": "account",
+                },
+            },
+        ),
+        (
+            "管理员账号是多少",
+            "admin account password",
+            {
+                "code": 0,
+                "answer": "管理员账号是本校十位数的学校标识码，初始密码统一由所属教育局下发。",
+                "action": "NONE",
+                "intent_result": {
+                    "intent": "QUERY", "sentiment": "NEUTRAL",
+                    "sub_intent": None, "action_code": None,
+                    "refined_query": "admin account password",
+                    "category": "account",
+                },
+            },
+        ),
+        (
+            "管理员忘记密码怎么办",
+            "admin forgot password reset",
+            {
+                "code": 0,
+                "answer": "管理员账号是本校十位数的学校标识码，忘记密码可在登录页面通过手机验证码找回密码。",
+                "action": "NONE",
+                "intent_result": {
+                    "intent": "QUERY", "sentiment": "NEUTRAL",
+                    "sub_intent": None, "action_code": None,
+                    "refined_query": "admin forgot password reset",
+                    "category": "account",
+                },
+            },
+        ),
+    ]
+
+    # ── 预加载全部 FAQ 到 K1 ────────────────────────────────────────────
+    print("\n── 预加载 FAQ 到 K1 ──")
+    for rep_q, _, answer in faq:
+        k1_put(rep_q, answer)
+        print(f"  put: {rep_q}")
+
+    # ── K1 精确命中测试 ────────────────────────────────────────────────
+    print("\n── K1 精确/归一命中测试 ──")
+    k1_queries = [
+        ("老师的电脑配置是什么",       True,  "原句，应命中"),
+        ("教师客户端下载",             True,  "同义词归一后应命中"),
+        ("老师端系统Windows要求",      True,  "同义词归一后应命中"),
+        ("老师的账号是多少",           True,  "原句，应命中"),
+        ("忘记密码怎么修改",           True,  "同义词归一后应命中"),
+        ("学生的账号是什么",           True,  "原句，应命中"),
+        ("孩子账号是什么",             True,  "同义词归一后应命中"),
+        ("学生忘记密码怎么办",         True,  "原句，应命中"),
+        ("学生手机没绑定怎么办",       True,  "同义词归一后应命中"),
+        ("管理员账号是多少",           True,  "原句，应命中"),
+        ("这个问题不在知识库里面",     False, "应 MISS"),
+    ]
+
+    pass_k1 = 0
+    for q, expect_hit, note in k1_queries:
+        hit = k1_get(q)
+        got_hit = hit is not None
+        ok = got_hit == expect_hit
+        tag = "✓" if ok else "✗"
+        ht = "HIT " if got_hit else "MISS"
+        print(f"  [{tag}][{ht}] {q}  ({note})")
+        if got_hit and hit:
+            print(f"          action={hit.get('action')}  "
+                  f"intent={hit.get('intent_result', {}).get('intent')}")
+        if ok:
+            pass_k1 += 1
+
+    print(f"\n  K1 结果: {pass_k1}/{len(k1_queries)} 通过")
+
+    # ── K2 语义命中测试（fake 8-dim 向量，仅验证存取逻辑）────────────────
+    print("\n── K2 语义命中测试（fake 8-dim 向量）──")
+
+    def fake_vec(seed: int, dim: int = 8) -> list[float]:
+        random.seed(seed)
+        v = [random.gauss(0, 1) for _ in range(dim)]
+        norm = math.sqrt(sum(x * x for x in v))
+        return [x / norm for x in v]
+
+    # 把有 norm_key 的 FAQ 条目写入 K2
+    k2_entries = [
+        (norm_key, fake_vec(i), answer)
+        for i, (_, norm_key, answer) in enumerate(faq)
+        if norm_key
+    ]
+
+    print()
+    for norm_q, vec, ans in k2_entries:
+        k2_put(norm_q, vec, ans)
+        print(f"  k2_put: {norm_q}")
+
+    # 用同一个向量查询（cosine = 1.0，必然命中）
+    print()
+    pass_k2 = 0
+    for norm_q, vec, _ in k2_entries:
+        hit = k2_get(norm_q, vec)
+        ok = hit is not None
+        tag = "✓" if ok else "✗"
+        ht = "HIT " if ok else "MISS"
+        print(f"  [{tag}][{ht}] {norm_q}")
+        if ok:
+            pass_k2 += 1
+            print(f"          answer={hit.get('answer', '')[:50]}...")
+
+    # 用不相关向量查询 → 应 MISS
+    dissimilar = fake_vec(9999)
+    hit = k2_get("完全不相关的问题", dissimilar)
+    dis_ok = hit is None
+    print(f"  [{'✓' if dis_ok else '✗'}][{'MISS' if dis_ok else 'HIT '}] "
+          f"不相关向量（预期 MISS）")
+
+    print(f"\n  K2 结果: {pass_k2}/{len(k2_entries)} 语义命中，"
+          f"不相关向量: {'正确 MISS' if dis_ok else '错误 HIT'}")
+
+    # ── 汇总 ────────────────────────────────────────────────────────────
+    print("\n══════════════════════════════════")
+    print(f"  K1: {pass_k1}/{len(k1_queries)}")
+    print(f"  K2: {pass_k2}/{len(k2_entries)}  +  dissimilar={'OK' if dis_ok else 'FAIL'}")
+    print("══════════════════════════════════")

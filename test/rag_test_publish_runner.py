@@ -176,7 +176,7 @@ def main():
     client_id = "user_001"
 
     # Java: config path resolution
-    config_path = "e:\\ai"
+    config_path = "e:\EIT\py-LLM-integration"
     if len(sys.argv) > 1:
         config_path = sys.argv[1]
         logger.debug("📂 检测到命令行参数，使用配置路径: " + config_path)
