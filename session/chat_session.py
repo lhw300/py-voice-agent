@@ -550,7 +550,9 @@ class ChatSession:
             "cache.fallback.keywords",
             "i don't have information|i'm sorry, i don't have|no relevant information|i couldn't find"
         )
-        return any(kw.strip().lower() in a for kw in keywords.split("|"))
+        result= any(kw.strip().lower() in a for kw in keywords.split("|"))
+        logger.debug(self.sinfo + "_is_fallback checking... "+str(result))
+        return result
     def askRerank(self, text: str, isrewrite: bool = False) -> ChatAnswer:
         logger.debug(self.sinfo + "🚀 executing advanced RAG pipeline (refactored ask3)...isrewrite " + str(isrewrite))
         ca = ChatAnswer(code=-1, answer=None)
@@ -614,7 +616,8 @@ class ChatSession:
             if ans is not None:
                 ca.answer = ans
                 ca.code = 0
-                if not self._is_fallback(ans):
+                min_len = AiConfig.getIntConfig("k2.minanswer.length", 35)
+                if not self._is_fallback(ans) and len(str(ans)) >= min_len:
                     logger.debug(self.sinfo + "[K1] put... ")
                     k1_put(norm, ca.model_dump())
                     logger.debug(self.sinfo + "[K2] put... ")

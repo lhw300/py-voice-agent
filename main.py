@@ -13,10 +13,32 @@ from handler.filling_handler    import FillingHandler
 from handler.filling_handler_ai import FillingHandlerAI
 from intent.intent_result import IntentResult, Intent
 
+from logging.handlers import RotatingFileHandler
+
+LOG_DIR = os.environ.get("LOG_DIR", "/home/call/py-voice-agent/logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+LOG_MAX_BYTES = int(os.environ.get("LOG_MAX_BYTES", 10 * 1024 * 1024))  # 10MB/文件
+LOG_BACKUP_COUNT = int(os.environ.get("LOG_BACKUP_COUNT", 5))           # 最多5个文件
+
+_formatter = logging.Formatter(
+    "%(levelname)s: %(asctime)s %(name)s:%(lineno)s %(message)s"
+)
+
+_console_handler = logging.StreamHandler(stream=sys.stdout)
+_console_handler.setFormatter(_formatter)
+
+_file_handler = RotatingFileHandler(
+    filename=os.path.join(LOG_DIR, "a.log"),
+    maxBytes=LOG_MAX_BYTES,
+    backupCount=LOG_BACKUP_COUNT,
+    encoding="utf-8",
+)
+_file_handler.setFormatter(_formatter)
+
 logging.basicConfig(
-    format="%(levelname)s: %(asctime)s %(name)s:%(lineno)s %(message)s",
     level=logging.DEBUG,
-    stream=sys.stdout,
+    handlers=[_console_handler, _file_handler],
     force=True,
 )
 logging.getLogger("openai").setLevel(logging.WARNING)
@@ -26,7 +48,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Config directory — matches Java: SessionManager.init(baseDir)
-CONFIG_DIR = os.environ.get("AI_CONFIG_DIR", "E:\EIT\py-LLM-integration")
+CONFIG_DIR = os.environ.get("AI_CONFIG_DIR", "/home/call/py-voice-agent")
 
 app = FastAPI()
 

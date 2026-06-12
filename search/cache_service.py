@@ -205,7 +205,7 @@ def k2_get(norm: str, vector: list[float]) -> Optional[dict]:
     if not norm or not vector:
         return None
 
-    threshold = AiConfig.getDoubleConfig("k2.similarity.threshold", 0.90)
+    threshold = AiConfig.getDoubleConfig("k2.similarity.threshold", 0.95)
     r         = _get_redis()
 
     try:
@@ -221,8 +221,24 @@ def k2_get(norm: str, vector: list[float]) -> Optional[dict]:
             raw = r.hgetall(_PREFIX_K2 + entry_id)
             if not raw or "vector" not in raw:
                 continue
+            # >>>>>>>>>> 增加的代码开始 >>>>>>>>>>
+            # 1. 兼容处理：确保从 Redis 拿出来的问题能正常解析为字符串（防止乱码）
+            raw_q = raw.get("question", b"")
+            stored_q = raw_q.decode("utf-8") if isinstance(raw_q, bytes) else str(raw_q)
+            # <<<<<<<<<< 增加的代码结束 <<<<<<<<<<
             stored_vec = _bytes_to_vector(raw["vector"].encode("latin-1"))
             score      = _cosine(vector, stored_vec)
+            # >>>>>>>>>> 增加的代码开始 >>>>>>>>>>
+            # 2. 打印当前对比的向量值和对应的问题
+            print("\n" + "-" * 50)
+            print(f"[K2 对比中] 相似度分数 (Score): {score:.4f}")
+
+            #print(f"🔹 当前查询的向量 (Norm Vec - 前5维): {vector[:5]} ... (总长度: {len(vector)})")
+            print(f"🔸 数据库的问题 (Stored Q): {stored_q}")
+            #print(f"🔸 数据库的向量 (Stored Vec - 前5维): {stored_vec[:5]} ... (总长度: {len(stored_vec)})")
+            print("-" * 50)
+            # <<<<<<<<<< 增加的代码结束 <<<<<<<<<<
+
             if score > best_score:
                 best_score = score
                 best_val   = raw

@@ -23,7 +23,7 @@ config_dir = os.environ.get("AI_CONFIG_DIR", r"E:\EIT\py-LLM-integration")
 PROMPT_PATH = os.path.join(config_dir, "config", "prompt_internet_repair.txt")
 
 def load_prompt() -> str:
-    with open(PROMPT_PATH, "r", encoding="gbk") as f:
+    with open(PROMPT_PATH, "r", encoding="utf-8") as f:
         return f.read()
 
 def ask_ai(system_prompt: str, history: list) -> dict:
