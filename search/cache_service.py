@@ -151,6 +151,8 @@ def k1_get(question: str) -> Optional[dict]:
             logger.debug(f"[K1] hit  hash={h}  q={norm[:50]}")
             r.zadd(_K1_INDEX, {h: time.time()})
             return json.loads(val)
+        else:
+            logger.debug(f"[K1] No hit  hash={h}  q={norm[:50]}")
     except Exception as e:
         logger.warning(f"[K1] get error: {e}")
     return None
@@ -199,9 +201,10 @@ def k2_get(norm: str, vector: list[float]) -> Optional[dict]:
 
     Returns full ChatAnswer dict on hit, None on miss.
     """
+    #print(f"get k2 1")
     if not _redis_available:
         return None   # 或 return（put函数）
-
+    #print(f"get k2 2")
     if not norm or not vector:
         return None
 
@@ -210,17 +213,20 @@ def k2_get(norm: str, vector: list[float]) -> Optional[dict]:
 
     try:
         keys = r.zrange(_K2_INDEX, 0, -1)
+        #print(f"get k2 3")
         if not keys:
             return None
-
+        #print(f"get k2 4")
         best_score = -1.0
         best_val   = None
         best_key   = None
 
         for entry_id in keys:
             raw = r.hgetall(_PREFIX_K2 + entry_id)
+            #print(f"get k2 5")
             if not raw or "vector" not in raw:
                 continue
+            #print(f"get k2 6")
             # >>>>>>>>>> 增加的代码开始 >>>>>>>>>>
             # 1. 兼容处理：确保从 Redis 拿出来的问题能正常解析为字符串（防止乱码）
             raw_q = raw.get("question", b"")
@@ -230,13 +236,14 @@ def k2_get(norm: str, vector: list[float]) -> Optional[dict]:
             score      = _cosine(vector, stored_vec)
             # >>>>>>>>>> 增加的代码开始 >>>>>>>>>>
             # 2. 打印当前对比的向量值和对应的问题
-            print("\n" + "-" * 50)
-            print(f"[K2 对比中] 相似度分数 (Score): {score:.4f}")
-
+            #print("\n" + "-" * 50)
+            if score>0.87:
+                logger.debug(f"[K2 对比中] 相似度分数 (Score): {score:.4f}")
+                logger.debug(f"🔸 数据库的问题 (Stored Q): {stored_q}")
             #print(f"🔹 当前查询的向量 (Norm Vec - 前5维): {vector[:5]} ... (总长度: {len(vector)})")
-            print(f"🔸 数据库的问题 (Stored Q): {stored_q}")
+
             #print(f"🔸 数据库的向量 (Stored Vec - 前5维): {stored_vec[:5]} ... (总长度: {len(stored_vec)})")
-            print("-" * 50)
+            #print("-" * 50)
             # <<<<<<<<<< 增加的代码结束 <<<<<<<<<<
 
             if score > best_score:
@@ -468,7 +475,8 @@ def warmup(config_dir: str) -> None:
     total_q = sum(len(e[0]) for e in entries)
     logger.debug(f"[cache] warmup start: {len(entries)} entries, {total_q} questions")
 
-    success = 0
+    success  = 0
+    k2_count = 0
     for questions, faq_answer in entries:
         answer_dict = {
             "code"         : 0,
@@ -478,7 +486,7 @@ def warmup(config_dir: str) -> None:
             "intent_result": {}
         }
 
-        # K1 — write each Q variant, skip duplicates
+        # K1 + K2 — write each Q variant, skip duplicates
         seen_hashes = set()
         for q in questions:
             norm = convert(q)
@@ -487,19 +495,18 @@ def warmup(config_dir: str) -> None:
                 logger.debug(f"[warmup] skip duplicate  hash={h}  q={q[:40]}")
                 continue
             seen_hashes.add(h)
+
             k1_put(norm, answer_dict, permanent=True)
             success += 1
 
-        # K2 — one representative vector per entry
-        rep_q  = next((q for q in questions if "?" in q), questions[0])
-        norm   = convert(rep_q)
-        try:
-            vector = sm.ACTIVE_EMBED.embed(norm)
-            k2_put(norm, vector, answer_dict, permanent=True)
-        except Exception as e:
-            logger.warning(f"[cache] warmup k2 embed failed: {rep_q[:40]} — {e}")
+            try:
+                vector = sm.ACTIVE_EMBED.embed(norm)
+                k2_put(norm, vector, answer_dict, permanent=True)
+                k2_count += 1
+            except Exception as e:
+                logger.warning(f"[cache] warmup k2 embed failed: {q[:40]} — {e}")
 
-    logger.debug(f"[cache] warmup complete: {success} K1 written, {len(entries)} K2 written")
+    logger.debug(f"[cache] warmup complete: {success} K1 written, {k2_count} K2 written")
 def _vector_to_bytes(vector: list[float]) -> bytes:
     """Encode float list as raw bytes (4 bytes per float, little-endian)."""
     import struct

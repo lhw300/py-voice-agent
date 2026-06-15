@@ -142,7 +142,7 @@ class ChatSession:
     def getRouter(self):                            return self.router
 
     def setCRID(self, crid: str) -> None:
-        logger.debug(self.sinfo + " crid=" + crid)
+        logger.debug(self.sinfo + " crid=" + crid+" -----------------------------------------")
         self.crid = crid
 
     # -------------------------------------------------------------------------
@@ -347,8 +347,8 @@ class ChatSession:
             userMsg = text + " " + refined
         else:
             userMsg = text
-
-        self._history_add("user", userMsg)
+        #no cat, cat cause hallucination
+        self._history_add("user", text)
         self._history_trim(MAX_HISTORY)
 
         # K1 exact cache lookup — QUERY only
@@ -391,13 +391,13 @@ class ChatSession:
      * }
      */
     """
-    def askByQueryMode(self, text: str, isrewrite: bool = False) -> ChatAnswer:
+    def askByQueryMode(self, text: str, isrewrite: bool = False,allow_cache_write: bool = True) -> ChatAnswer:
         if self.queryMode and self.queryMode.lower() == "fulltext":
             return self.askFullContext(text, isrewrite)
         elif self.queryMode and self.queryMode.lower() == "simple":
             return self.askSimple(text)
         else:
-            return self.askRerank(text, isrewrite)
+            return self.askRerank(text, isrewrite,allow_cache_write)
 
     """
     /*
@@ -553,7 +553,7 @@ class ChatSession:
         result= any(kw.strip().lower() in a for kw in keywords.split("|"))
         logger.debug(self.sinfo + "_is_fallback checking... "+str(result))
         return result
-    def askRerank(self, text: str, isrewrite: bool = False) -> ChatAnswer:
+    def askRerank(self, text: str, isrewrite: bool = False,allow_cache_write: bool = True) -> ChatAnswer:
         logger.debug(self.sinfo + "🚀 executing advanced RAG pipeline (refactored ask3)...isrewrite " + str(isrewrite))
         ca = ChatAnswer(code=-1, answer=None)
 
@@ -617,7 +617,11 @@ class ChatSession:
                 ca.answer = ans
                 ca.code = 0
                 min_len = AiConfig.getIntConfig("k2.minanswer.length", 35)
-                if not self._is_fallback(ans) and len(str(ans)) >= min_len:
+                cache_update_enabled = AiConfig.getStringConfig("cache.update.k1k2", "true").lower() == "true"
+
+                logger.debug(self.sinfo + "cache.update.k1k2  "+cache_update_enabled)
+                if (cache_update_enabled and allow_cache_write
+                        and not self._is_fallback(ans) and len(str(ans)) >= min_len):
                     logger.debug(self.sinfo + "[K1] put... ")
                     k1_put(norm, ca.model_dump())
                     logger.debug(self.sinfo + "[K2] put... ")

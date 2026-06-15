@@ -240,3 +240,46 @@ def log(logger, key: str, label: str, text: str, sinfo: str = "") -> None:
     n = getIntConfig(key, 0)
     if n > 0:
         logger.debug(sinfo + label + ": " + str(text)[:n])
+
+# ---------------------------------------------------------------------------
+# Web API helpers — 供 FastAPI 路由调用
+# ---------------------------------------------------------------------------
+
+def get_all() -> Dict[str, str]:
+    """返回全部配置 key-value"""
+    return dict(configMap)
+
+
+def get_raw() -> str:
+    """返回 ai.conf 原始文件内容"""
+    if configFile is None:
+        raise RuntimeError("AiConfig not initialized")
+    with open(configFile, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def save(updates: Dict[str, str]) -> None:
+    """将 updates 写回 ai.conf，保留注释和格式，然后 reload"""
+    if configFile is None:
+        raise RuntimeError("AiConfig not initialized")
+    import re
+    with open(configFile, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    out = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#") or not stripped:
+            out.append(line); continue
+        idx = stripped.find("=")
+        if idx < 0:
+            out.append(line); continue
+        key = stripped[:idx].strip()
+        if key in updates:
+            comment_match = re.search(r"\s+(#.*)$", line)
+            comment = f"  {comment_match.group(1)}" if comment_match else ""
+            out.append(f"{key}={updates[key]}{comment}")
+        else:
+            out.append(line)
+    with open(configFile, "w", encoding="utf-8") as f:
+        f.write("\n".join(out))
+    reload()

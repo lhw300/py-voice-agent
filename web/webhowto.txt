@@ -1,0 +1,6 @@
+E:\EIT\py-LLM-integration\web>npm run dev
+http://localhost:5173/
+
+
+
+py:web/main.py

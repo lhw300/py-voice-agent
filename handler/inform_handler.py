@@ -30,7 +30,7 @@ class InformHandler(IntentHandler):
             # Java: session.clearPendingQuery();
             session.clearPendingQuery()
             # Java: return session.askByQueryMode(pending, false);
-            return session.askByQueryMode(pending, False)
+            return session.askByQueryMode(pending, False, allow_cache_write=False)
 
         pool_str = AiConfig.getStringConfig("response.inform.ack", "Got it. Anything else I can help with?")
         pool = [s.strip() for s in pool_str.split("|") if s.strip()]
