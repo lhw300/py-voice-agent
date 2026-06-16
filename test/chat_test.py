@@ -2,6 +2,8 @@
 # chat_test.py
 import requests
 import random
+from datetime import date, datetime
+import random
 from pprint import pprint
 BASE_URL = "http://localhost:7626"
 
@@ -11,9 +13,9 @@ def chat(vo_id: str, text: str, sn: str) -> str:
         "sn":         sn,
         "crid":       "c1",
         "ch":         "1",
-        "call_date":  "2026-05-05",
-        "start_time": "10:00:00",
-        "phone":      "13800000000",
+        "call_date":  date.today().isoformat(),
+        "start_time": datetime.now().strftime("%H:%M:%S"),
+        "phone":      f"138{random.randint(10000000, 99999999)}",
         "vo_id":      vo_id,
         "text":       text
     }

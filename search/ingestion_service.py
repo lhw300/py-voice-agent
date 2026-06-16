@@ -180,7 +180,19 @@ def _readFromTxt(file_path: str) -> List[KnowledgeEntry]:
                 logger.debug("⚠️ 跳过格式错误的行: " + trimmed)
     return entries
 
-
+def _readFromTxt_from_str(text: str) -> List[KnowledgeEntry]:
+    entries = []
+    for line in text.splitlines():
+        trimmed = line.strip()
+        if not trimmed or trimmed.startswith("#"):
+            continue
+        parts = trimmed.split("||", 3)
+        if len(parts) >= 4:
+            entries.append(KnowledgeEntry(
+                id=parts[0].strip(), category=parts[1].strip(),
+                summary=parts[2].strip(), content=parts[3].strip(),
+            ))
+    return entries
 # ---------------------------------------------------------------------------
 """
 private static List<KnowledgeEntry> readFromExcel(String filePath) throws Exception {

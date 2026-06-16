@@ -7,3 +7,5 @@ psycopg2-binary
 openpyxl
 redis
 sentence-transformers
+pymongo 
+python-multipart
