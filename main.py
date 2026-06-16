@@ -16,7 +16,7 @@ import session.session_manager as session_manager
 from search.embedding_client import EmbeddingClient
 import search.mongo_service as mongo_service
 import main_ai
-import web.main as web_router
+import web.main_web as web_router
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_DIR          = os.environ.get("LOG_DIR", "/home/call/py-voice-agent/logs")
@@ -88,4 +88,5 @@ def health():
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=7626, reload=False)
+    reload = os.environ.get("APP_RELOAD", "false").lower() == "true"
+    uvicorn.run("main:app", host="0.0.0.0", port=7626, reload=reload)

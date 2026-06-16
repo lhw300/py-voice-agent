@@ -320,3 +320,134 @@ async def import_txt(file: UploadFile = File(...)):
         except Exception as e:
             logger.error(f"import_txt entry {entry.id} failed: {e}")
     return {"inserted": success, "total": len(entries)}
+
+# 追加到 web/main.py 末尾
+
+# ═══════════════════════════════════════════════════
+#  缓存管理 API
+# ═══════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════
+#  缓存管理 API  （追加到 web/main.py 末尾）
+# ═══════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════
+#  缓存管理 API  （追加到 web/main.py 末尾）
+# ═══════════════════════════════════════════════════
+from search.cache_service import (
+    k1_put, k2_put,
+    _get_redis, _K1_INDEX, _K2_INDEX,
+    _PREFIX_K1, _PREFIX_K2, convert,
+)
+import json
+
+def _ensure_str(val) -> str:
+    if isinstance(val, bytes): return val.decode("utf-8")
+    return str(val) if val is not None else ""
+
+
+@router.get("/cache/list")
+def cache_list(
+        cache_type: str = "k1",   # k1 or k2
+        page:       int = 1,
+        page_size:  int = 20,
+):
+    r      = _get_redis()
+    offset = (page - 1) * page_size
+    items  = []
+
+    if cache_type == "k1":
+        # zrevrange = 按 score（插入时间）倒序
+        total_keys = r.zcard(_K1_INDEX)
+        keys = r.zrevrange(_K1_INDEX, offset, offset + page_size - 1)
+        for h_bytes in keys:
+            h   = _ensure_str(h_bytes)
+            val = r.get(_PREFIX_K1 + h)
+            if not val: continue
+            d   = json.loads(_ensure_str(val))
+            ttl = r.ttl(_PREFIX_K1 + h)
+            items.append({
+                "id":         h,
+                "question":   d.get("question", ""),
+                "answer":     d.get("answer",   ""),
+                "hit_source": d.get("hit_source", ""),
+                "ttl":        ttl,
+                "permanent":  ttl == -1,
+            })
+    else:
+        total_keys = r.zcard(_K2_INDEX)
+        keys = r.zrevrange(_K2_INDEX, offset, offset + page_size - 1)
+        for eid_bytes in keys:
+            eid = _ensure_str(eid_bytes)
+            raw = r.hgetall(_PREFIX_K2 + eid)
+            if not raw: continue
+            question = _ensure_str(raw.get(b"question", raw.get("question", "")))
+            answer   = _ensure_str(raw.get(b"answer",   raw.get("answer",   "")))
+            ttl = r.ttl(_PREFIX_K2 + eid)
+            items.append({
+                "id":       eid,
+                "question": question,
+                "answer":   answer,
+                "ttl":      ttl,
+                "permanent":ttl == -1,
+            })
+
+    return {
+        "total":     total_keys,
+        "page":      page,
+        "page_size": page_size,
+        "items":     items,
+    }
+
+
+class CacheAddRequest(BaseModel):
+    question:  str
+    answer:    str
+    permanent: bool = True
+
+
+@router.post("/cache/add")
+def cache_add(body: CacheAddRequest):
+    norm = convert(body.question)
+    if not norm:
+        raise HTTPException(400, "Question is empty after normalization")
+
+    answer_dict = {
+        "code":          0,
+        "answer":        body.answer,
+        "action":        "NONE",
+        "hit_source":    "k1",
+        "intent_result": {}
+    }
+
+    k1_put(norm, answer_dict, permanent=body.permanent)
+
+    k2_written = False
+    try:
+        vector = _embed_client.embed(norm)
+        k2_put(norm, vector, answer_dict, permanent=body.permanent)
+        k2_written = True
+    except Exception as e:
+        logger.warning(f"cache_add k2 embed failed: {e}")
+
+    return {
+        "ok":         True,
+        "norm":       norm,
+        "k1_written": True,
+        "k2_written": k2_written,
+        "permanent":  body.permanent,
+    }
+
+
+@router.delete("/cache/k1/{item_id}")
+def cache_delete_k1(item_id: str):
+    r = _get_redis()
+    r.zrem(_K1_INDEX, item_id)
+    r.delete(_PREFIX_K1 + item_id)
+    return {"ok": True}
+
+
+@router.delete("/cache/k2/{item_id}")
+def cache_delete_k2(item_id: str):
+    r = _get_redis()
+    r.zrem(_K2_INDEX, item_id)
+    r.delete(_PREFIX_K2 + item_id)
+    return {"ok": True}
