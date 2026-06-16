@@ -267,8 +267,10 @@ import search.mongo_service as mongo_service
 
 @router.get("/conversations")
 def list_conversations(
+        keyword:    Optional[str] = None,
         sn:        Optional[str] = None,
         phone:     Optional[str] = None,
+
         status:    Optional[str] = None,
         ch:        Optional[str] = None,
         date_from: Optional[str] = None,
@@ -276,7 +278,7 @@ def list_conversations(
         page:      int = 1,
         page_size: int = 20,
 ):
-    return mongo_service.list_calls(sn=sn,
+    return mongo_service.list_calls(keyword=keyword,sn=sn,
         phone=phone, status=status, ch=ch,
         date_from=date_from, date_to=date_to,
         page=page, page_size=page_size,

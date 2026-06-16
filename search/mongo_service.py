@@ -151,6 +151,7 @@ def _fmt(doc: dict) -> dict:
 def list_calls(
         sn:        Optional[str] = None,
         phone:     Optional[str] = None,
+        keyword:   Optional[str] = None,
         status:    Optional[str] = None,
         ch:        Optional[str] = None,
         date_from: Optional[str] = None,
@@ -175,6 +176,14 @@ def list_calls(
         from datetime import date, timedelta
         date_filter = {"$gte": (date.today() - timedelta(days=7)).isoformat()}
         query["call_date"] = date_filter
+    if keyword:
+        query["turns"] = {"$elemMatch": {
+            "$or": [
+                {"user":      {"$regex": keyword, "$options": "i"}},
+                {"assistant": {"$regex": keyword, "$options": "i"}},
+            ]
+        }}
+
     if status == "transferred":
         query["status"] = "transferred"
 
