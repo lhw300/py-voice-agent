@@ -17,6 +17,8 @@ from search.embedding_client import EmbeddingClient
 import search.mongo_service as mongo_service
 import main_ai
 import web.main_web as web_router
+import web.auth_router as auth_router
+
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_DIR          = os.environ.get("LOG_DIR", "/home/call/py-voice-agent/logs")
@@ -59,7 +61,8 @@ async def lifespan(app: FastAPI):
     session_manager.init(config_dir=CONFIG_DIR)
     session_manager.warm_up()
 
-    embed_client = EmbeddingClient(os.path.join(LLM_CONFIG_DIR, "bge-large-zh-v1.5"))
+    from session.session_manager import ACTIVE_EMBED
+    embed_client = ACTIVE_EMBED
     table        = AiConfig.getStringConfig("db.postgres.table.online", "enterprise_knowledge_1024")
     web_router.init(embed_client, table)
     mongo_service.init()
@@ -80,7 +83,7 @@ app.add_middleware(
 
 app.include_router(web_router.router)  # /api/...
 app.include_router(main_ai.router)     # /ai_send  /filling  /filling_ai
-
+app.include_router(auth_router.router)
 
 @app.get("/health")
 def health():

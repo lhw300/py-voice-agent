@@ -87,6 +87,35 @@ class LlmClient:
         )
         return resp.choices[0].message.content.strip()
 
+    def chat_with_tools(self, messages: list, tools: list = None, tool_choice: str = "auto"):
+        """
+        支持 Tool Calling 的 chat。
+        - tools=None 时退化为普通 chat，返回 message.content 字符串
+        - tools 有值时返回完整 message 对象（含 tool_calls）
+        """
+        logger.debug("chat_with_tools send to AI url=" + str(self._client.base_url) + " model=" + self._model)
+        AiConfig.log(logger, "log.messages.chars", "messages", str(messages))
+
+        kwargs = dict(
+            model       = self._model,
+            messages    = messages,
+            temperature = 0.1,
+            top_p       = 0.9,
+            max_tokens  = 1024,
+        )
+        if tools:
+            kwargs["tools"]       = tools
+            kwargs["tool_choice"] = tool_choice
+
+        resp = self._client.chat.completions.create(**kwargs)
+        msg  = resp.choices[0].message
+
+        # 有 tool_calls → 返回完整 message 对象，ask_skill 需要 msg.tool_calls
+        if getattr(msg, "tool_calls", None):
+            return msg
+
+        # 无 tool_calls → 直接返回文本，和 chat() 保持一致
+        return msg.content.strip() if msg.content else ""
 
 from intent.intent_dispatcher  import IntentDispatcher
 from intent.intent_result      import Intent

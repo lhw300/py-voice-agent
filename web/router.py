@@ -4,14 +4,21 @@ from typing import Optional, List, Dict
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import ai_config as AiConfig
-from search.embedding_client import EmbeddingClient
 import os
 
 LLM_CONFIG_DIR = os.environ.get("LLM_CONFIG_DIR", "/home/call/py-voice-agent")
-embed_client = EmbeddingClient(os.path.join(LLM_CONFIG_DIR, "bge-large-zh-v1.5"))
+
 TABLE = AiConfig.getStringConfig("db.postgres.table.online", "enterprise_knowledge_1024")
 
 router = APIRouter()
+
+
+# ── 统一通过 ACTIVE_EMBED 获取，不硬编码本地模型 ──────────────────────────────
+def get_embed_client():
+    from session.session_manager import ACTIVE_EMBED
+    if ACTIVE_EMBED is None:
+        raise RuntimeError("ACTIVE_EMBED is None — session_manager not initialized yet")
+    return ACTIVE_EMBED
 
 
 # ── DB ────────────────────────────────────────────────────────────────────────
@@ -140,7 +147,7 @@ def update_knowledge(item_id: str, item: KnowledgeItemUpdate):
         fields.append("summary = %s"); params.append(item.summary)
     if item.content is not None:
         fields.append("content = %s"); params.append(item.content)
-        fields.append("embedding = NULL")
+        fields.append("embedding = NULL")  # content变了，清空旧向量
     fields.append("updated_at = NOW()")
     params.append(item_id)
     with get_conn() as conn:
@@ -174,6 +181,7 @@ def delete_many(ids: List[str]):
 
 @router.post("/api/knowledge/vectorize")
 def vectorize(ids: List[str]):
+    embed = get_embed_client()   # ← 用 ACTIVE_EMBED，不硬编码本地模型
     results = {"success": 0, "failed": 0, "errors": []}
     with get_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -181,7 +189,7 @@ def vectorize(ids: List[str]):
             items = cur.fetchall()
         for item in items:
             try:
-                vec = embed_client.embed(item["summary"] + " " + item["content"])
+                vec = embed.embed(item["summary"] + " " + item["content"])
                 vec_str = "[" + ",".join(str(v) for v in vec) + "]"
                 with conn.cursor() as c:
                     c.execute(f"""
@@ -200,7 +208,8 @@ def vectorize(ids: List[str]):
 @router.get("/api/search")
 def search(q: str, category: Optional[str] = None, limit: int = 5):
     from search.search_service import getRelevantKnowledge
-    results = getRelevantKnowledge(TABLE, q, embed_client, category_filter=category, limit=limit)
+    embed = get_embed_client()   # ← 用 ACTIVE_EMBED
+    results = getRelevantKnowledge(TABLE, q, embed, category_filter=category, limit=limit)
     return [{"category": r.category, "summary": r.summary, "content": r.content, "distance": round(r.distance, 4)} for r in results]
 
 

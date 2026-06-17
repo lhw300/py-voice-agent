@@ -103,16 +103,13 @@ class ChatHistory:
         windowSize = self.max_ask_history_to_ai
         result = []
 
-        # Java: 始终强制保留 System Message
         if self._messages and self._messages[0]["role"].lower() == "system":
             result.append(self._messages[0])
+            startIndex = max(1, len(self._messages) - windowSize)
+        else:
+            startIndex = max(0, len(self._messages) - windowSize)  # ← 从0开始
 
-        # Java: int startIndex = Math.max(1, size - windowSize);
-        size       = len(self._messages)
-        startIndex = max(1, size - windowSize)
-
-        # Java: for (int i = startIndex; i < size; i++)
-        for i in range(startIndex, size):
+        for i in range(startIndex, len(self._messages)):
             result.append(self._messages[i])
 
         return result

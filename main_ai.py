@@ -36,7 +36,14 @@ async def ai_send(req: ChatRequest) -> ChatAnswer:
         logger.error(f"upsert_call error: {e}", exc_info=True)
     session = session_manager.get_session(req.sn)
     session.setCRID(req.crid)
-    answer: ChatAnswer = await run_in_threadpool(session.ask, req.text)
+    session._caller_phone = req.phone or "9"
+    # ── 新增：业务 skill 路由 ──────────────────────────────
+
+    answer = await session.ask_skill(req.text)
+    if answer is None:
+        answer = await run_in_threadpool(session.ask, req.text)
+    # ────────────────────────────────────────────────────────
+    #answer: ChatAnswer = await run_in_threadpool(session.ask, req.text)
 
     elapsed = int((time.time() - t0) * 1000)
 

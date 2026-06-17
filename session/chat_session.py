@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import time
+
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 import ai_config as AiConfig
@@ -11,6 +12,7 @@ from models import ChatAnswer
 from intent.intent_result import Intent, IntentResult
 from session.chat_history import ChatHistory
 from search.cache_service import convert, k1_get, k1_put, k2_get, k2_put
+from session.chat_skill import ask_skill as _ask_skill
 logger = logging.getLogger(__name__)
 
 # Java: private static final int MAX_HISTORY        = 60;
@@ -83,6 +85,8 @@ class ChatSession:
         self.maxRerankCandidates: int       = 5
         self.finalContextLimit: int         = 3
         self.rerankTimeoutSeconds: int      = 5
+
+        self._caller_phone: str = ""        # 由 ai_send 注入
 
     """
     /*
@@ -286,6 +290,9 @@ class ChatSession:
      * }
      */
     """
+    async def ask_skill(self, text: str):
+        return await _ask_skill(self, text)
+
     def askString(self, text: str) -> str:
         ca = self.ask(text)
         return json.dumps({"code": ca.code, "answer": ca.answer, "action": ca.action})
@@ -321,6 +328,7 @@ class ChatSession:
      * }
      */
     """
+
     def ask(self, text: str) -> ChatAnswer:
         if not text or not text.strip():
             return ChatAnswer(code=-1, answer="输入为空")
@@ -375,6 +383,7 @@ class ChatSession:
         t2 = time.time()
         logger.debug(self.sinfo + " [2] Handler elapsed: " + str(int((t2 - t1) * 1000)) + " ms")
         logger.debug(self.sinfo + " [total] ask() full pipeline elapsed: " + str(int((t2 - t0) * 1000)) + " ms")
+        logger.debug(self.sinfo + "[ask] answer=" + str(ca.answer)[:100] if ca.answer else "[ask] answer=None")
 
         if ca.answer and ca.answer.strip():
             self._history_add("assistant", ca.answer)
@@ -542,7 +551,8 @@ class ChatSession:
      */
     """
     def _is_fallback(self, answer: str) -> bool:
-        logger.debug(self.sinfo + "_is_fallback checking... "+answer)
+        answer = str(answer) if answer is not None else ""  # ← 加这行
+        logger.debug(self.sinfo + "_is_fallback checking... " + answer)
         if not answer:
             return True
         a = answer.lower()
@@ -553,6 +563,7 @@ class ChatSession:
         result= any(kw.strip().lower() in a for kw in keywords.split("|"))
         logger.debug(self.sinfo + "_is_fallback checking... "+str(result))
         return result
+
     def askRerank(self, text: str, isrewrite: bool = False,allow_cache_write: bool = True) -> ChatAnswer:
         logger.debug(self.sinfo + "🚀 executing advanced RAG pipeline (refactored ask3)...isrewrite " + str(isrewrite))
         ca = ChatAnswer(code=-1, answer=None)
@@ -619,7 +630,7 @@ class ChatSession:
                 min_len = AiConfig.getIntConfig("k2.minanswer.length", 35)
                 cache_update_enabled = AiConfig.getStringConfig("cache.update.k1k2", "true").lower() == "true"
 
-                logger.debug(self.sinfo + "cache.update.k1k2  "+cache_update_enabled)
+                logger.debug(f"{self.sinfo}cache.update.k1k2  {cache_update_enabled}")
                 if (cache_update_enabled and allow_cache_write
                         and not self._is_fallback(ans) and len(str(ans)) >= min_len):
                     logger.debug(self.sinfo + "[K1] put... ")

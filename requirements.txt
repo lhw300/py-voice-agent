@@ -9,3 +9,5 @@ redis
 sentence-transformers
 pymongo 
 python-multipart
+pymysql 
+pycryptodome
