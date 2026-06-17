@@ -43,15 +43,6 @@ logger = logging.getLogger(__name__)
 COMPLAINT_TRIGGER = ["我要投诉", "我想投诉", "要投诉", "想投诉", "投诉你们", "我要举报", "想举报", "我不满意"]
 EXPRESS_TRIGGER   = ["查快递", "查物流", "快递到哪", "包裹在哪", "物流查询", "查一下快递", "查下快递"]
 
-# 上一轮 assistant 在等待投诉内容时的标志性短语
-_COMPLAINT_WAITING_SIGNALS = ["描述", "投诉的问题", "发生了什么", "哪方面", "具体情况", "告诉我", "简要说明"]
-# 上一轮 assistant 在等待快递日期时的标志性短语
-_EXPRESS_WAITING_SIGNALS   = ["哪一天", "哪天", "日期", "几月", "查哪"]
-
-# 用户明确拒绝/切换话题的词，此时不强制走 skill
-_ABORT_SIGNALS = ["算了", "不投诉", "取消", "不查了", "没事了", "不用了"]
-
-
 def _keyword_force_skill(text: str) -> Optional[str]:
     """精确短语预检，命中返回 skill 名，否则返回 None 走 LLM 路由"""
     for kw in COMPLAINT_TRIGGER:
@@ -60,45 +51,6 @@ def _keyword_force_skill(text: str) -> Optional[str]:
     for kw in EXPRESS_TRIGGER:
         if kw in text:
             return "express_query_skill"
-    return None
-
-
-def _context_force_skill(text: str, non_system: list) -> Optional[str]:
-    """
-    上下文感知强制路由：
-    检查 history 最后一条 assistant 消息，判断当前对话是否处于某个 skill 的等待阶段。
-    若是，则强制路由，避免 LLM tool_choice=auto 漏判。
-
-    返回值：
-        "complaint_skill"     → 强制投诉 skill（content 模式）
-        "express_query_skill" → 强制快递 skill（date 模式）
-        None                  → 不强制，走 LLM auto
-    """
-    # 用户明确要退出/切换，不强制
-    for sig in _ABORT_SIGNALS:
-        if sig in text:
-            return None
-
-    # 找最后一条 assistant 消息
-    last_assistant = None
-    for msg in reversed(non_system):
-        if msg.get("role") == "assistant":
-            last_assistant = msg.get("content", "")
-            break
-
-    if not last_assistant:
-        return None
-
-    # 上一轮在等投诉内容 → 当前用户输入就是投诉内容
-    for sig in _COMPLAINT_WAITING_SIGNALS:
-        if sig in last_assistant:
-            return "complaint_skill"
-
-    # 上一轮在等快递日期 → 当前用户输入就是日期
-    for sig in _EXPRESS_WAITING_SIGNALS:
-        if sig in last_assistant:
-            return "express_query_skill"
-
     return None
 
 
@@ -136,9 +88,11 @@ SKILL_TOOLS = [
         "function": {
             "name": "complaint_skill",
             "description": (
-                "用户表达投诉意图时调用。分两个阶段："
+                "用户表达投诉意图时调用。分三个阶段："
                 "阶段1：用户只表达投诉意向未描述内容，只传 phone；"
-                "阶段2：用户描述了投诉内容，传 phone + content，直接完成受理生成工单。"
+                "阶段2：用户描述了内容但未确认，传 phone + content；"
+                "阶段3：用户明确确认，传 phone + content + confirmed=true 完成受理。"
+                "若用户否认或要重新描述，只传 phone 重新进入阶段1。"
                 "【触发示例】'我要投诉'、'我想投诉'、'投诉你们'、'我不满意'、'举报'、'服务态度差'。"
                 "【不触发】'投诉流程是什么'、'投诉渠道有哪些'等知识性问题不调用此工具。"
             ),
@@ -152,6 +106,10 @@ SKILL_TOOLS = [
                     "content": {
                         "type": "string",
                         "description": "用户描述的投诉内容，阶段1不传"
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "用户明确确认后传 true，阶段1/2不传"
                     }
                 },
                 "required": ["phone"]
@@ -178,9 +136,10 @@ def build_skill_prompt(caller_phone: str) -> str:
 - 用户已指定日期 → 传 phone + date，直接返回当天最后状态
 
 ### 2. complaint_skill
-用于受理客户投诉，分两个阶段：
+用于受理客户投诉，分三个阶段：
 - 阶段1 用户只表达投诉意向，未描述内容 → 只传 phone，skill 返回追问话术
-- 阶段2 用户描述了投诉内容             → 传 phone + content，直接完成受理生成工单
+- 阶段2 用户描述了投诉内容，尚未确认   → 传 phone + content，skill 返回复述请用户确认
+- 阶段3 用户明确确认                   → 传 phone + content + confirmed=true，完成受理生成工单
 
 ## Routing Rules
 
@@ -190,6 +149,8 @@ def build_skill_prompt(caller_phone: str) -> str:
 | 表达投诉/不满/举报/态度差 | 调用 complaint_skill |
 | 回复日期（上轮在查快递） | 调用 express_query_skill(phone, date) |
 | 回复投诉内容（上轮在问投诉内容） | 调用 complaint_skill(phone, content) |
+| 确认投诉（说"对/是/好/确认/提交/没错"等类似表达） | 调用 complaint_skill(phone, content=上轮内容, confirmed=true) |
+| 拒绝或重新描述（说"不/不对/不确认/不确定/算了/重说/重新说/取消"等类似表达） | 调用 complaint_skill(phone)，重新进入阶段1 |
 | 其他（问候/知识问题/闲聊/无关话题） | 不调任何工具，输出空字符串 |
 
 ## 重要约束
@@ -222,11 +183,19 @@ async def _express_query_skill(phone: str, date: Optional[str] = None) -> str:
 async def _complaint_skill(
         phone: str,
         content: Optional[str] = None,
+        confirmed: Optional[bool] = None
 ) -> str:
     if not content:
         return json.dumps({"status": "need_content", "msg": "请简要描述您要投诉的问题"}, ensure_ascii=False)
 
-    # 有内容直接受理，无需确认
+    if not confirmed:
+        return json.dumps({
+            "status": "need_confirm",
+            "content": content,
+            "msg": f"您投诉的是：{content}，确认提交吗？"
+        }, ensure_ascii=False)
+
+    # TODO: 替换为真实 DB 写入
     ticket_id = f"CMP{int(time.time())}"
     logger.info(f"complaint accepted | phone={phone} ticket={ticket_id} content={content}")
     return json.dumps({
@@ -276,82 +245,55 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
             logger.warning(session.sinfo + "[ask_skill] router/llm not available, fallback to ask()")
             return None
 
-        # ── 阶段1：关键词预检 ────────────────────────────────────────
+        # ── 关键词预检：强制指定 tool_choice ────────────────────────
         forced = _keyword_force_skill(text)
         if forced:
+            tool_choice = {"type": "function", "function": {"name": forced}}
             logger.debug(session.sinfo + f"[ask_skill] keyword forced → {forced}")
+        else:
+            tool_choice = "auto"
 
-        # ── 阶段2：上下文感知强制路由（优先级高于关键词预检）────────
-        # 例如：上一轮追问"请描述投诉问题"，当前输入"物品破损"应直接触发 complaint_skill
-        ctx_forced = _context_force_skill(text, non_system)
-        if ctx_forced:
-            logger.debug(session.sinfo + f"[ask_skill] context forced → {ctx_forced}")
-            forced = ctx_forced  # 覆盖（上下文判断更精准）
+        # ── 第一次 LLM：路由判断 ────────────────────────────────────
+        response = await run_in_threadpool(
+            llm.chat_with_tools, messages, tools=SKILL_TOOLS, tool_choice=tool_choice
+        )
+        tool_calls = getattr(response, "tool_calls", None)
 
-        if forced:
-            # ── 上下文强制路由：直接构造 args，跳过第一次 LLM 调用 ──
-            last_tool_name = forced
+        logger.debug(session.sinfo + f"[ask_skill] tool routing elapsed={int((time.time()-t0)*1000)}ms "
+                     + f"tool_calls={'yes' if tool_calls else 'no'}")
+
+        if not tool_calls:
+            return None
+
+        # ── 执行 skill ───────────────────────────────────────────────
+        messages.append({
+            "role":       "assistant",
+            "content":    response.content or "",
+            "tool_calls": [tc.model_dump() for tc in response.tool_calls],
+        })
+        logger.debug(f"{session.sinfo}[第一次 chat with tool后 content={response.content} tool_calls={response.tool_calls}")
+
+        for tc in tool_calls:
+            last_tool_name = tc.function.name
+            args = json.loads(tc.function.arguments)
+            if "phone" not in args or not args["phone"]:
+                args["phone"] = caller_phone
             fn = _SKILL_MAP.get(last_tool_name)
 
-            if forced == "complaint_skill":
-                # 上下文强制 → 用户当前输入即为投诉内容
-                args = {"phone": caller_phone, "content": text}
-            elif forced == "express_query_skill":
-                # 上下文强制 → 用户当前输入即为日期
-                args = {"phone": caller_phone, "date": text}
+            if fn is None:
+                logger.warning(session.sinfo + f"[ask_skill] unknown skill: {last_tool_name}")
+                result = json.dumps({"error": f"unknown skill: {last_tool_name}"})
             else:
-                args = {"phone": caller_phone}
+                logger.info(session.sinfo + f"[ask_skill] calling {last_tool_name} args={args}")
+                result = await fn(**args)
 
-            logger.info(session.sinfo + f"[ask_skill] ctx/kw direct call {last_tool_name} args={args}")
-            result = await fn(**args)
-            logger.debug(session.sinfo + f"[ask_skill] tool result: name={last_tool_name} result={result}")
-
-            messages.append({"role": "tool",
-                             "tool_call_id": "ctx_forced",
-                             "name":         last_tool_name,
-                             "content":      result})
-
-        else:
-            # ── 无强制：走第一次 LLM tool_choice=auto ──────────────
-            response = await run_in_threadpool(
-                llm.chat_with_tools, messages, tools=SKILL_TOOLS, tool_choice="auto"
-            )
-            tool_calls = getattr(response, "tool_calls", None)
-
-            logger.debug(session.sinfo + f"[ask_skill] tool routing elapsed={int((time.time()-t0)*1000)}ms "
-                         + f"tool_calls={'yes' if tool_calls else 'no'}")
-
-            if not tool_calls:
-                return None
-
+            logger.debug(f"{session.sinfo}[ask_skill] tool result: name={last_tool_name} result={result}")
             messages.append({
-                "role":       "assistant",
-                "content":    response.content or "",
-                "tool_calls": [tc.model_dump() for tc in response.tool_calls],
+                "role":         "tool",
+                "tool_call_id": tc.id,
+                "name":         last_tool_name,
+                "content":      result,
             })
-            logger.debug(f"{session.sinfo}[第一次 chat with tool后 content={response.content} tool_calls={response.tool_calls}")
-
-            for tc in tool_calls:
-                last_tool_name = tc.function.name
-                args = json.loads(tc.function.arguments)
-                if "phone" not in args or not args["phone"]:
-                    args["phone"] = caller_phone
-                fn = _SKILL_MAP.get(last_tool_name)
-
-                if fn is None:
-                    logger.warning(session.sinfo + f"[ask_skill] unknown skill: {last_tool_name}")
-                    result = json.dumps({"error": f"unknown skill: {last_tool_name}"})
-                else:
-                    logger.info(session.sinfo + f"[ask_skill] calling {last_tool_name} args={args}")
-                    result = await fn(**args)
-
-                logger.debug(f"{session.sinfo}[ask_skill] tool result: name={last_tool_name} result={result}")
-                messages.append({
-                    "role":         "tool",
-                    "tool_call_id": tc.id,
-                    "name":         last_tool_name,
-                    "content":      result,
-                })
 
         # ── 第二次 LLM：组织自然语言回复 ────────────────────────────
         answer_text = await run_in_threadpool(llm.chat_with_tools, messages)
