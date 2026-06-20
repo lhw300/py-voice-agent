@@ -12,18 +12,30 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import ai_config as AiConfig
-import session.session_manager as session_manager
-from search.embedding_client import EmbeddingClient
-import search.mongo_service as mongo_service
-import main_ai
-import web.main_web as web_router
-import web.auth_router as auth_router
+
+# ── Config dir：必须先确定，不能走 ai.conf fallback（它是定位 ai.conf 的输入）──
+CONFIG_DIR     = os.environ.get("AI_CONFIG_DIR",  "/home/call/py-voice-agent")
+LLM_CONFIG_DIR = os.environ.get("LLM_CONFIG_DIR", "/home/call/py-voice-agent")
+
+# ── 新增：提前 init AiConfig，使下面的 LOG_DIR 等参数能读到 ai.conf ──────────
+# AiConfig.reload() 是幂等的，session_manager.init() 之后还会再 init 一次，
+# 不会有冲突，只是多读一次文件，可忽略不计。
+AiConfig.init(CONFIG_DIR)
 
 
-# ── Logging ───────────────────────────────────────────────────────────────────
-LOG_DIR          = os.environ.get("LOG_DIR", "/home/call/py-voice-agent/logs")
-LOG_MAX_BYTES    = int(os.environ.get("LOG_MAX_BYTES",    10 * 1024 * 1024))
-LOG_BACKUP_COUNT = int(os.environ.get("LOG_BACKUP_COUNT", 5))
+# ── Logging（改动点：三级 fallback）────────────────────────────────────────
+LOG_DIR = os.environ.get(
+    "LOG_DIR",
+    AiConfig.getStringConfig("log.dir", "/home/call/py-voice-agent/logs")
+)
+LOG_MAX_BYTES = int(os.environ.get(
+    "LOG_MAX_BYTES",
+    AiConfig.getStringConfig("log.max_bytes", str(10 * 1024 * 1024))
+))
+LOG_BACKUP_COUNT = int(os.environ.get(
+    "LOG_BACKUP_COUNT",
+    AiConfig.getStringConfig("log.backup_count", "5")
+))
 
 os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -50,9 +62,12 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
-CONFIG_DIR     = os.environ.get("AI_CONFIG_DIR",  "/home/call/py-voice-agent")
-LLM_CONFIG_DIR = os.environ.get("LLM_CONFIG_DIR", "/home/call/py-voice-agent")
+import session.session_manager as session_manager
+from search.embedding_client import EmbeddingClient
+import search.mongo_service as mongo_service
+import main_ai
+import web.main_web as web_router
+import web.auth_router as auth_router
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -92,4 +107,4 @@ def health():
 
 if __name__ == "__main__":
     reload = os.environ.get("APP_RELOAD", "false").lower() == "true"
-    uvicorn.run("main:app", host="0.0.0.0", port=7626, reload=reload)
+    uvicorn.run("main:app", host="0.0.0.0", port=7626, reload=False)

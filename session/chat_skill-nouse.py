@@ -117,17 +117,36 @@ _TOOL_COMPLAINT = {
     "function": {
         "name": "complaint_skill",
         "description": (
-            "用户表达投诉意图时调用。分两个阶段："
-            "阶段1：用户只表达投诉意向未描述内容，只传 phone；"
-            "阶段2：用户描述了投诉内容，传 phone + content，直接完成受理生成工单。"
+            "用户表达投诉意图时调用。分三个阶段：\n"
+            "阶段1（意向）：用户只表达投诉意向未描述内容，只传 phone，不传 content 和 confirmed。\n"
+            "阶段2（收集内容）：用户描述了投诉内容，传 phone + content，confirmed=false。"
+            "此时工具会复述内容并询问用户是否确认提交，不会生成工单。\n"
+            "阶段3（确认提交）：用户明确表示确认/对/没错/提交等同意语义后，"
+            "再次调用并传 phone + content（沿用阶段2的内容）+ confirmed=true，"
+            "此时才真正生成工单。\n"
+            "若用户在确认环节要求修改内容，回到阶段2重新收集，confirmed 重置为 false。"
             "【触发示例】'我要投诉'、'我想投诉'、'投诉你们'、'我不满意'、'举报'、'服务态度差'。"
             "【不触发】'投诉流程是什么'、'投诉渠道有哪些'等知识性问题不调用此工具。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "phone":   {"type": "string", "description": "来电手机号，从系统 Context 自动获取"},
-                "content": {"type": "string", "description": "用户描述的投诉内容，阶段1不传"}
+                "phone": {
+                    "type": "string",
+                    "description": "来电手机号，从系统 Context 自动获取"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "用户描述的投诉内容，阶段1不传，阶段2/3必传"
+                },
+                "confirmed": {
+                    "type": "boolean",
+                    "description": (
+                        "用户是否已明确确认提交。默认 false。"
+                        "只有用户说出确认类语义（如'对'、'没错'、'提交'、'确认'）后才传 true。"
+                        "true 时才会真正落库生成工单，false 时仅返回内容供用户确认。"
+                    )
+                }
             },
             "required": ["phone"]
         }
@@ -181,9 +200,12 @@ def build_skill_prompt(caller_phone: str) -> str:
 - 用户已指定日期 → 传 phone + date，直接返回当天最后状态
 
 ### 2. complaint_skill
-用于受理客户投诉，分两个阶段：
-- 阶段1 用户只表达投诉意向，未描述内容 → 只传 phone，skill 返回追问话术
-- 阶段2 用户描述了投诉内容             → 传 phone + content，直接完成受理生成工单
+用于受理客户投诉，分三个阶段：
+- 阶段1 用户只表达投诉意向，未描述内容       → 只传 phone，skill 返回追问话术
+- 阶段2 用户描述了投诉内容，但未确认提交     → 传 phone + content，confirmed=false，skill 复述内容并询问是否确认提交
+- 阶段3 用户明确确认提交（如"对""没错""提交"）→ 传 phone + content + confirmed=true，直接完成受理生成工单
+
+若用户在阶段3要求修改内容，回到阶段2重新收集，confirmed 重置为 false。
 
 ## Routing Rules
 
@@ -197,7 +219,9 @@ def build_skill_prompt(caller_phone: str) -> str:
 
 ## 重要约束
 1. phone 始终从 Context 自动获取，禁止向用户索取
-2. 用户切换话题时，优先响应新话题，放弃当前未完成流程
+2. 没有进行中的流程时，按用户当前意图正常路由；若已进入某个 skill 的等待状态
+   （如等待投诉内容、等待快递日期），用户必须明确放弃（cancel_skill）才能退出，
+   不会因为提及其他话题而自动切换
 3. 工具返回的原始数据不得直接输出，必须用自然语言组织后回复
 4. 不得暴露工具名称、参数名称等内部信息给用户
 """
@@ -260,9 +284,16 @@ async def _express_query_skill(phone: str, date: Optional[str] = None) -> str:
         return json.dumps({"status": "ok", "date": record["date"], "express_status": record["status"], "update_time": record["update_time"]}, ensure_ascii=False)
 
 
-async def _complaint_skill(phone: str, content: Optional[str] = None) -> str:
+async def _complaint_skill(phone: str, content: Optional[str] = None, confirmed: bool = False) -> str:
     if not content:
         return json.dumps({"status": "need_content", "msg": "请简要描述您要投诉的问题"}, ensure_ascii=False)
+
+    if not confirmed:
+        return json.dumps({
+            "status": "pending_confirm",
+            "content": content,
+            "msg": f"您反馈的内容是：{content}，确认提交吗？"
+        }, ensure_ascii=False)
 
     ticket_id = f"CMP{int(time.time())}"
     logger.info(f"complaint accepted | phone={phone} ticket={ticket_id} content={content}")
@@ -420,6 +451,7 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
                     logger.info(session.sinfo + f"[ask_skill] reject limit reached ({reject_count}), force exit lock state={wait_state!r}")
                     _set_wait_state(session, None)
                     _clear_reject_count(session)
+                    return await ask_skill(session, text)   # ← 新增：立刻用初始流程重新处理这句话
                 # else: 等待状态保持不变，下一轮继续锁定
 
         # ══════════════════════════════════════════════════════════
@@ -498,17 +530,17 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
 
 
 def _update_state(session, result: Optional[str]) -> None:
-    """根据最后一次 tool result 的 status 更新 session 等待状态"""
     if not result:
         return
     try:
         status = json.loads(result).get("status")
         if status == "need_content":
             _set_wait_state(session, "complaint_content")
+        elif status == "pending_confirm":
+            _set_wait_state(session, "complaint_content")   # 继续锁定，等待用户确认
         elif status == "need_date":
             _set_wait_state(session, "express_date")
         else:
-            # accepted / ok / not_found / no_record / cancelled / error 均清除状态
             _set_wait_state(session, None)
     except Exception:
         _set_wait_state(session, None)

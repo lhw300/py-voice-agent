@@ -1,379 +1,55 @@
-"""
-chat_skill.py
-─────────────────────────────────────────────────────────────
-个性化业务 Skill 路由层
 
-职责：
-  - 定义 SKILL_TOOLS（express_query_skill / complaint_skill）
-  - 实现各 skill 的业务逻辑（mock，替换为真实 DB 调用）
-  - ask_skill() 挂载到 ChatSession，作为 ask() 的前置路由
+# chat_test.py
+import requests
+import random
+from pprint import pprint
+BASE_URL = "http://localhost:7626"
 
-用法：
-    from chat_skill import ask_skill as _ask_skill
-
-    # chat_session.py 里：
-    async def ask_skill(self, text: str):
-        return await _ask_skill(self, text)
-
-    # ai_send.py 里：
-    session._caller_phone = req.phone or ""
-    answer = await session.ask_skill(req.text)
-    if answer is None:
-        answer = await run_in_threadpool(session.ask, req.text)
-"""
-
-import json
-import logging
-import time
-from starlette.concurrency import run_in_threadpool
-from typing import Optional, TYPE_CHECKING
-
-from models import ChatAnswer, Action, CODE_OK
-
-if TYPE_CHECKING:
-    from session.chat_session import ChatSession
-
-logger = logging.getLogger(__name__)
+def chat(vo_id: str, text: str, sn: str) -> str:
+    url = f"{BASE_URL}/{vo_id}"
+    payload = {
+        "sn":         sn,
+        "crid":       "c1",
+        "ch":         "1",
+        "call_date":  "2026-05-05",
+        "start_time": "10:00:00",
+        "phone":      "13800000000",
+        "vo_id":      vo_id,
+        "text":       text
+    }
+    resp = requests.post(url, json=payload)
+    pprint(resp.json())
+    if resp.status_code == 200:
+        return resp.json().get("answer", "")
+    else:
+        return f"[错误 {resp.status_code}] {resp.text}"
 
 
-# ══════════════════════════════════════════════════════════════
-# 1. 关键词预检（兜底 qwen-plus tool_choice=auto 触发不稳定）
-# ══════════════════════════════════════════════════════════════
-# 精确短语匹配，避免"投诉流程是什么"误判
-COMPLAINT_TRIGGER = ["我要投诉", "我想投诉", "要投诉", "想投诉", "投诉你们", "我要举报", "想举报", "我不满意"]
-EXPRESS_TRIGGER   = ["查快递", "查物流", "快递到哪", "包裹在哪", "物流查询", "查一下快递", "查下快递"]
+if __name__ == "__main__":
+    sn = str(random.randint(1000, 9999))
+    vo_id = "filling_ai"
+    vo_id = "ai_send"
+    print(f"=== 交互测试 vo_id={vo_id} sn={sn} ===")
+    print("输入 'quit' 或 'exit' 退出，输入 'new' 开始新会话\n")
 
-# 上一轮 assistant 在等待投诉内容时的标志性短语
-_COMPLAINT_WAITING_SIGNALS = ["描述", "投诉的问题", "发生了什么", "哪方面", "具体情况", "告诉我", "简要说明"]
-# 上一轮 assistant 在等待快递日期时的标志性短语
-_EXPRESS_WAITING_SIGNALS   = ["哪一天", "哪天", "日期", "几月", "查哪"]
-
-# 用户明确拒绝/切换话题的词，此时不强制走 skill
-_ABORT_SIGNALS = ["算了", "不投诉", "取消", "不查了", "没事了", "不用了"]
-
-
-def _keyword_force_skill(text: str) -> Optional[str]:
-    """精确短语预检，命中返回 skill 名，否则返回 None 走 LLM 路由"""
-    for kw in COMPLAINT_TRIGGER:
-        if kw in text:
-            return "complaint_skill"
-    for kw in EXPRESS_TRIGGER:
-        if kw in text:
-            return "express_query_skill"
-    return None
-
-
-def _context_force_skill(text: str, non_system: list) -> Optional[str]:
-    """
-    上下文感知强制路由：
-    检查 history 最后一条 assistant 消息，判断当前对话是否处于某个 skill 的等待阶段。
-    若是，则强制路由，避免 LLM tool_choice=auto 漏判。
-
-    返回值：
-        "complaint_skill"     → 强制投诉 skill（content 模式）
-        "express_query_skill" → 强制快递 skill（date 模式）
-        None                  → 不强制，走 LLM auto
-    """
-    # 用户明确要退出/切换，不强制
-    for sig in _ABORT_SIGNALS:
-        if sig in text:
-            return None
-
-    # 找最后一条 assistant 消息
-    last_assistant = None
-    for msg in reversed(non_system):
-        if msg.get("role") == "assistant":
-            last_assistant = msg.get("content", "")
+    while True:
+        try:
+            user_input = input("你: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n退出")
             break
 
-    if not last_assistant:
-        return None
+        if not user_input:
+            continue
 
-    # 上一轮在等投诉内容 → 当前用户输入就是投诉内容
-    for sig in _COMPLAINT_WAITING_SIGNALS:
-        if sig in last_assistant:
-            return "complaint_skill"
+        if user_input.lower() in ("quit", "exit"):
+            print("退出")
+            break
 
-    # 上一轮在等快递日期 → 当前用户输入就是日期
-    for sig in _EXPRESS_WAITING_SIGNALS:
-        if sig in last_assistant:
-            return "express_query_skill"
+        if user_input.lower() == "new":
+            sn = str(random.randint(1000, 9999))
+            print(f"--- 新会话 sn={sn} ---\n")
+            continue
 
-    return None
-
-
-# ══════════════════════════════════════════════════════════════
-# 2. Tools 定义
-# ══════════════════════════════════════════════════════════════
-SKILL_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "express_query_skill",
-            "description": (
-                "用户询问快递、物流、包裹状态时调用。"
-                "未指定日期时返回该手机号有快递记录的日期列表，由 AI 询问客户要查哪天；"
-                "用户指定日期后再次调用，返回当天最后一条快递状态。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "phone": {
-                        "type": "string",
-                        "description": "来电手机号，从系统 Context 自动获取，禁止向用户索取"
-                    },
-                    "date": {
-                        "type": "string",
-                        "description": "可选，用户指定的日期，格式 YYYY-MM-DD"
-                    }
-                },
-                "required": ["phone"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "complaint_skill",
-            "description": (
-                "用户表达投诉意图时调用。分两个阶段："
-                "阶段1：用户只表达投诉意向未描述内容，只传 phone；"
-                "阶段2：用户描述了投诉内容，传 phone + content，直接完成受理生成工单。"
-                "【触发示例】'我要投诉'、'我想投诉'、'投诉你们'、'我不满意'、'举报'、'服务态度差'。"
-                "【不触发】'投诉流程是什么'、'投诉渠道有哪些'等知识性问题不调用此工具。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "phone": {
-                        "type": "string",
-                        "description": "来电手机号，从系统 Context 自动获取，禁止向用户索取"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "用户描述的投诉内容，阶段1不传"
-                    }
-                },
-                "required": ["phone"]
-            }
-        }
-    }
-]
-
-
-# ══════════════════════════════════════════════════════════════
-# 3. System prompt
-# ══════════════════════════════════════════════════════════════
-def build_skill_prompt(caller_phone: str) -> str:
-    return f"""# Role: 智能客服助理
-
-## Context
-- 当前来电手机号: {caller_phone}（系统自动注入，禁止向用户索取）
-
-## Available Tools
-
-### 1. express_query_skill
-用于查询来电客户的快递/物流/包裹状态。
-- 用户未指定日期 → 只传 phone，返回日期列表后询问客户要查哪天
-- 用户已指定日期 → 传 phone + date，直接返回当天最后状态
-
-### 2. complaint_skill
-用于受理客户投诉，分两个阶段：
-- 阶段1 用户只表达投诉意向，未描述内容 → 只传 phone，skill 返回追问话术
-- 阶段2 用户描述了投诉内容             → 传 phone + content，直接完成受理生成工单
-
-## Routing Rules
-
-| 用户输入特征 | 动作 |
-|---|---|
-| 询问快递/物流/包裹/单号 | 调用 express_query_skill |
-| 表达投诉/不满/举报/态度差 | 调用 complaint_skill |
-| 回复日期（上轮在查快递） | 调用 express_query_skill(phone, date) |
-| 回复投诉内容（上轮在问投诉内容） | 调用 complaint_skill(phone, content) |
-| 其他（问候/知识问题/闲聊/无关话题） | 不调任何工具，输出空字符串 |
-
-## 重要约束
-1. phone 始终从 Context 自动获取，禁止向用户索取
-2. 用户切换话题时，优先响应新话题，放弃当前未完成流程
-3. 工具返回的原始数据不得直接输出，必须用自然语言组织后回复
-4. 不得暴露工具名称、参数名称等内部信息给用户
-"""
-
-
-# ══════════════════════════════════════════════════════════════
-# 4. Skill 实现
-# ══════════════════════════════════════════════════════════════
-
-async def _express_query_skill(phone: str, date: Optional[str] = None) -> str:
-    if date is None:
-        # TODO: 替换为真实 DB 查询
-        dates = ["2024-03-01", "2024-03-05", "2024-03-10"]  # mock
-        if not dates:
-            return json.dumps({"status": "no_record", "msg": "未查询到该手机号的快递记录"}, ensure_ascii=False)
-        return json.dumps({"status": "need_date", "dates": dates, "msg": f"查询到您有 {len(dates)} 条快递记录"}, ensure_ascii=False)
-    else:
-        # TODO: 替换为真实 DB 查询
-        record = {"date": date, "status": "已到达广州转运中心", "update_time": "14:32"}  # mock
-        if not record:
-            return json.dumps({"status": "not_found", "msg": f"未找到 {date} 的快递记录"}, ensure_ascii=False)
-        return json.dumps({"status": "ok", "date": record["date"], "express_status": record["status"], "update_time": record["update_time"]}, ensure_ascii=False)
-
-
-async def _complaint_skill(
-        phone: str,
-        content: Optional[str] = None,
-) -> str:
-    if not content:
-        return json.dumps({"status": "need_content", "msg": "请简要描述您要投诉的问题"}, ensure_ascii=False)
-
-    # 有内容直接受理，无需确认
-    ticket_id = f"CMP{int(time.time())}"
-    logger.info(f"complaint accepted | phone={phone} ticket={ticket_id} content={content}")
-    return json.dumps({
-        "status": "accepted",
-        "ticket_id": ticket_id,
-        "msg": f"您的投诉已受理，工单号 {ticket_id}，我们将尽快跟进处理"
-    }, ensure_ascii=False)
-
-
-_SKILL_MAP = {
-    "express_query_skill": _express_query_skill,
-    "complaint_skill":     _complaint_skill,
-}
-
-
-# ══════════════════════════════════════════════════════════════
-# 5. ask_skill —— 挂载到 ChatSession 的方法
-# ══════════════════════════════════════════════════════════════
-async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
-    """
-    返回 ChatAnswer  → 命中 skill，直接使用
-    返回 None        → 未命中，交给原有 session.ask() 处理
-    """
-    import ai_config as AiConfig
-
-    if AiConfig.getStringConfig("skill_tools.enabled", "true").lower() != "true":
-        return None
-
-    caller_phone = getattr(session, "_caller_phone", "") or ""
-
-    history_msgs = session.history.toJsonArrayWithWindow()
-    logger.debug(session.sinfo + f"_messages={session.history._messages}")
-    non_system = [m for m in history_msgs if m.get("role") != "system"]
-    logger.debug(session.sinfo + "non_system=" + str(non_system))
-
-    skill_system = build_skill_prompt(caller_phone)
-    messages = [{"role": "system", "content": skill_system}] + non_system
-    messages.append({"role": "user", "content": text})
-
-    t0 = time.time()
-    last_tool_name = None
-    result = None
-
-    try:
-        llm = session.router.finalLlm() if session.router else None
-        if llm is None:
-            logger.warning(session.sinfo + "[ask_skill] router/llm not available, fallback to ask()")
-            return None
-
-        # ── 阶段1：关键词预检 ────────────────────────────────────────
-        forced = _keyword_force_skill(text)
-        if forced:
-            logger.debug(session.sinfo + f"[ask_skill] keyword forced → {forced}")
-
-        # ── 阶段2：上下文感知强制路由（优先级高于关键词预检）────────
-        # 例如：上一轮追问"请描述投诉问题"，当前输入"物品破损"应直接触发 complaint_skill
-        ctx_forced = _context_force_skill(text, non_system)
-        if ctx_forced:
-            logger.debug(session.sinfo + f"[ask_skill] context forced → {ctx_forced}")
-            forced = ctx_forced  # 覆盖（上下文判断更精准）
-
-        if forced:
-            # ── 上下文强制路由：直接构造 args，跳过第一次 LLM 调用 ──
-            last_tool_name = forced
-            fn = _SKILL_MAP.get(last_tool_name)
-
-            if forced == "complaint_skill":
-                # 上下文强制 → 用户当前输入即为投诉内容
-                args = {"phone": caller_phone, "content": text}
-            elif forced == "express_query_skill":
-                # 上下文强制 → 用户当前输入即为日期
-                args = {"phone": caller_phone, "date": text}
-            else:
-                args = {"phone": caller_phone}
-
-            logger.info(session.sinfo + f"[ask_skill] ctx/kw direct call {last_tool_name} args={args}")
-            result = await fn(**args)
-            logger.debug(session.sinfo + f"[ask_skill] tool result: name={last_tool_name} result={result}")
-
-            messages.append({"role": "tool",
-                             "tool_call_id": "ctx_forced",
-                             "name":         last_tool_name,
-                             "content":      result})
-
-        else:
-            # ── 无强制：走第一次 LLM tool_choice=auto ──────────────
-            response = await run_in_threadpool(
-                llm.chat_with_tools, messages, tools=SKILL_TOOLS, tool_choice="auto"
-            )
-            tool_calls = getattr(response, "tool_calls", None)
-
-            logger.debug(session.sinfo + f"[ask_skill] tool routing elapsed={int((time.time()-t0)*1000)}ms "
-                         + f"tool_calls={'yes' if tool_calls else 'no'}")
-
-            if not tool_calls:
-                return None
-
-            messages.append({
-                "role":       "assistant",
-                "content":    response.content or "",
-                "tool_calls": [tc.model_dump() for tc in response.tool_calls],
-            })
-            logger.debug(f"{session.sinfo}[第一次 chat with tool后 content={response.content} tool_calls={response.tool_calls}")
-
-            for tc in tool_calls:
-                last_tool_name = tc.function.name
-                args = json.loads(tc.function.arguments)
-                if "phone" not in args or not args["phone"]:
-                    args["phone"] = caller_phone
-                fn = _SKILL_MAP.get(last_tool_name)
-
-                if fn is None:
-                    logger.warning(session.sinfo + f"[ask_skill] unknown skill: {last_tool_name}")
-                    result = json.dumps({"error": f"unknown skill: {last_tool_name}"})
-                else:
-                    logger.info(session.sinfo + f"[ask_skill] calling {last_tool_name} args={args}")
-                    result = await fn(**args)
-
-                logger.debug(f"{session.sinfo}[ask_skill] tool result: name={last_tool_name} result={result}")
-                messages.append({
-                    "role":         "tool",
-                    "tool_call_id": tc.id,
-                    "name":         last_tool_name,
-                    "content":      result,
-                })
-
-        # ── 第二次 LLM：组织自然语言回复 ────────────────────────────
-        answer_text = await run_in_threadpool(llm.chat_with_tools, messages)
-
-        logger.debug(session.sinfo + f"[ask_skill] total elapsed={int((time.time()-t0)*1000)}ms "
-                     + f"skill={last_tool_name} answer={answer_text[:80] if answer_text else ''}")
-
-        # ── 写入 session history ─────────────────────────────────────
-        session._history_add("user", text)
-        if answer_text and answer_text.strip():
-            session._history_add("assistant", answer_text)
-            session._history_trim(60)
-
-        return ChatAnswer(
-            code       = CODE_OK,
-            answer     = answer_text,
-            action     = Action.NONE,
-            intent     = "COMMAND",
-            sub_intent = last_tool_name,
-            hit_source = "skill",
-        )
-
-    except Exception as e:
-        logger.error(session.sinfo + f"[ask_skill] error: {e}", exc_info=True)
-        return ChatAnswer.of_system_error(e)
+        answer = chat(vo_id, user_input, sn)
+        print(f"AI: {answer}\n")

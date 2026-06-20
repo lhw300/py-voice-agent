@@ -12,7 +12,7 @@ from models import ChatAnswer
 from intent.intent_result import Intent, IntentResult
 from session.chat_history import ChatHistory
 from search.cache_service import convert, k1_get, k1_put, k2_get, k2_put
-from session.chat_skill import ask_skill as _ask_skill
+from skill.chat_skill import ask_skill as _ask_skill
 logger = logging.getLogger(__name__)
 
 # Java: private static final int MAX_HISTORY        = 60;

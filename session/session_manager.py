@@ -12,7 +12,7 @@ import os
 import threading                      # Java: ScheduledExecutorService / Runnable
 import time                           # Java: System.currentTimeMillis()
 from typing import Dict, Optional
-
+import json
 # Java: import com.lcallai.handler.*;
 # Java: import com.lcallai.intent.*;
 from openai import OpenAI              # Java: OkHttpClient — shared HTTP connection pool
@@ -41,6 +41,11 @@ from search import cache_service
 # IntentClassifier only ever calls llmClient.generate() — it never knows
 # which model or endpoint is behind it.  This class is the Python equivalent.
 # ===========================================================================
+
+def _format_messages(messages: list) -> str:
+    formatted = json.dumps(messages, ensure_ascii=False, indent=2)
+    return formatted.replace("\\n", "\n")
+
 class LlmClient:
     """
     Thin wrapper that encapsulates OpenAI client + model name.
@@ -86,6 +91,8 @@ class LlmClient:
 
         )
         return resp.choices[0].message.content.strip()
+    # session/session_manager.py 顶部加一个本地函数，不依赖外部文件
+
 
     def chat_with_tools(self, messages: list, tools: list = None, tool_choice: str = "auto"):
         """
@@ -94,7 +101,10 @@ class LlmClient:
         - tools 有值时返回完整 message 对象（含 tool_calls）
         """
         logger.debug("chat_with_tools send to AI url=" + str(self._client.base_url) + " model=" + self._model)
-        AiConfig.log(logger, "log.messages.chars", "messages", str(messages))
+
+
+        AiConfig.log(logger, "log.messages.chars", "messages", _format_messages(messages))
+        #AiConfig.log(logger, "log.messages.chars", "messages", str(messages))
 
         kwargs = dict(
             model       = self._model,
@@ -661,7 +671,7 @@ def get_session(session_id: str) -> ChatSession:
             sessions[session_id] = session
 
             # Java: logger.debug("为客户端 [ sn=" + clientId + "] 创建了新会话...");
-            logger.debug("session [ sn=" + session_id + "] created, injected global Prompt and knowledge")
+            logger.debug("session [ sn=" + session_id + "] created")
 
         # Java: lastActiveTime.put(clientId, System.currentTimeMillis());
         lastActiveTime[session_id] = time.time()
