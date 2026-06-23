@@ -106,3 +106,40 @@ def find_skill_by_tool_name(tool_name: str) -> Optional[str]:
         if tool_name in module.tool_names:
             return name
     return None
+# ── session 通用读写 ──────────────────────────────
+def skill_get(session, key: str, default=None):
+    return getattr(session, key, default)
+
+def skill_set(session, key: str, value) -> None:
+    setattr(session, key, value)
+
+def skill_clear(session, *keys) -> None:
+    for key in keys:
+        setattr(session, key, None)
+
+def skill_get_draft(session, key: str) -> dict:
+    return getattr(session, key, None) or {}
+
+def skill_set_draft(session, key: str, draft: dict) -> None:
+    setattr(session, key, draft)
+
+def skill_merge_fields(draft: dict, **fields) -> dict:
+    for k, v in fields.items():
+        if v not in (None, ""):
+            draft[k] = v
+    return draft
+
+# ── 返回值构造 ──────────────────────────────
+def skill_need(msg: str) -> dict:
+    return {"status": SkillStatus.NEED_INFO, "msg": msg}
+
+def skill_pending(msg: str) -> dict:
+    return {"status": SkillStatus.PENDING_CONFIRM, "msg": msg}
+
+def skill_done(msg: str) -> dict:
+    return {"status": SkillStatus.DONE, "msg": msg}
+
+def skill_error(msg: str) -> dict:
+    return {"status": SkillStatus.ERROR, "msg": msg}
+
+

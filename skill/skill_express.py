@@ -10,7 +10,6 @@ skill_express.py
 不依赖任何共享 draft engine，状态全部用 session 上的几个简单属性自己管理。
 """
 
-import json
 import logging
 from typing import Optional
 
@@ -24,22 +23,39 @@ _STATE_KEY = "_express_dates"  # 暂存查到的日期列表，供用户选择�
 # ══════════════════════════════════════════════════════════════
 # Tool Schema
 # ══════════════════════════════════════════════════════════════
-_TOOL_EXPRESS = {
+_TOOL_EXPRESS_BY_PHONE = {
     "type": "function",
     "function": {
-        "name": "express_query_skill",
+        "name": "express_query_skill_by_phone",
         "description": (
-            "用户询问快递、物流、包裹状态时调用。"
-            "未指定日期时返回该手机号有快递记录的日期列表，由 AI 询问客户要查哪天；"
-            "用户指定日期后再次调用，返回当天最后一条快递状态。"
+            "用户询问快递、物流、包裹状态，但未指定日期时调用。"
+            "返回该手机号有快递记录的日期列表，再由 AI 询问客户要查哪天。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "phone": {"type": "string", "description": "来电手机号，从系统 Context 自动获取"},
-                "date":  {"type": "string", "description": "可选，用户指定的日期，格式 YYYY-MM-DD"},
             },
             "required": ["phone"],
+        },
+    },
+}
+
+_TOOL_EXPRESS_BY_DATE = {
+    "type": "function",
+    "function": {
+        "name": "express_query_skill_by_date",
+        "description": (
+            "用户明确说出具体日期（如\"3月1日\"、\"2024-03-05\"）后调用，查询当天的快递物流状态。\
+             必须有明确日期才能调用，用户未提供日期时禁止调用此工具。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "phone": {"type": "string", "description": "来电手机号，从系统 Context 自动获取"},
+                "date":  {"type": "string", "description": "用户指定的日期，格式 YYYY-MM-DD"},
+            },
+            "required": ["phone", "date"],
         },
     },
 }
@@ -71,20 +87,20 @@ async def _query_status_by_date(phone: str, date: str) -> Optional[dict]:
     return {"date": date, "status": "已到达广州转运中心", "update_time": "14:32"}  # mock
 
 
-async def handle(session, phone: str, date: Optional[str] = None) -> dict:
-    if date is None:
+async def handle(session, tool_name: str, phone: str, date: Optional[str] = None) -> dict:
+    if tool_name == "express_query_skill_by_phone":
         dates = await _query_dates(phone)
         if not dates:
             return {"status": SkillStatus.DONE, "msg": "未查询到该手机号的快递记录"}
-        # 把日期列表存到 session，供下一轮核对用户选的日期是否在列表里（可选校验）
         setattr(session, _STATE_KEY, dates)
         return {
             "status": SkillStatus.NEED_INFO,
             "msg": f"记录数: {len(dates)} ,日期是: {', '.join(dates)}",
         }
 
+    # express_query_skill_by_date
     record = await _query_status_by_date(phone, date)
-    setattr(session, _STATE_KEY, None) #_STATE_KEY = "_express_dates"
+    setattr(session, _STATE_KEY, None)
     if not record:
         return {"status": SkillStatus.DONE, "msg": f"未找到 {date} 的快递记录"}
 
@@ -107,9 +123,9 @@ def build_locked_prompt(session, caller_phone: str) -> str:
 - 当前状态: 正在等待客户提供快递查询日期 {date_hint}
 
 ## 规则
-- 客户提供了日期 → 调用 express_query_skill(phone, date)
+- 客户明确说出具体日期（如"3月1日"、"第一个"、"2024-03-05"）→ 调用 express_query_skill_by_date(phone, date)
 - 客户明确放弃/取消 → 调用 cancel_skill
-- 其他任何输入 → 不调工具，只说"请问您想查哪一天的快递呢？"
+- 其他任何输入，包括投诉、报修、问候等与日期无关的内容 → 不调任何工具，只回复"请问您想查哪一天的快递呢？"
 - 禁止讨论投诉、报修、知识问答等任何其他话题
 """
 
@@ -119,9 +135,9 @@ def build_locked_prompt(session, caller_phone: str) -> str:
 # ══════════════════════════════════════════════════════════════
 register_skill(SkillModule(
     name="express",
-    tools=[_TOOL_EXPRESS],
+    tools=[_TOOL_EXPRESS_BY_PHONE, _TOOL_EXPRESS_BY_DATE],
     trigger_keywords=["查快递", "查物流", "快递到哪", "包裹在哪", "物流查询", "查一下快递", "查下快递"],
-    locked_tools=[_TOOL_EXPRESS, _TOOL_CANCEL],
+    locked_tools=[_TOOL_EXPRESS_BY_DATE, _TOOL_CANCEL],
     build_locked_prompt=build_locked_prompt,
     handle=handle,
 ))

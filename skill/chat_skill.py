@@ -113,7 +113,7 @@ async def _dispatch(skill_name: str, tool_name: str, session, args: dict) -> dic
     module = get_skill(skill_name)
     if not module:
         return {"status": SkillStatus.ERROR, "msg": f"未知业务: {skill_name}"}
-    return await module.handle(session, **args)
+    return await module.handle(session,tool_name=tool_name, **args)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -129,7 +129,7 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
     t0 = time.time()
     last_tool_name = None
     answer_text = None
-
+    skip_history = False
     try:
         llm = session.router.finalLlm() if session.router else None
         if llm is None:
@@ -152,23 +152,37 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
             masked_tools = module.locked_tools
 
             logger.debug("=== locked_prompt ===")
-            logger.debug(locked_prompt)
+            #logger.debug(locked_prompt)
             logger.debug("=== masked_tools ===")
             logger.debug(json.dumps(masked_tools, ensure_ascii=False, indent=2))
 
-            locked_messages = [
-                {"role": "system", "content": locked_prompt},
-                {"role": "user", "content": text},
-            ]
-            logger.debug("===locked_messages ===",locked_messages)
+            # locked_messages = [
+            #     {"role": "system", "content": locked_prompt},
+            #     {"role": "user", "content": text},
+            # ]
+            locked_history = session.history.toJsonArrayWithWindow()
+            locked_non_system = [m for m in locked_history if m.get("role") != "system"]
+
+            locked_messages = [{"role": "system", "content": locked_prompt}]
+            locked_messages.extend(locked_non_system)
+            locked_messages.append({"role": "user", "content": text})
+# masked_tools 是工具列表，告诉 LLM 有哪些工具可用。
+# tool_choice 是调用策略，告诉 LLM 怎么用这些工具：
+#
+# tool_choice 不传（默认 auto）→ LLM 自己决定调不调
+# tool_choice="required" → 必须从 masked_tools 里选一个调
+# tool_choice={"type":"function","function":{"name":"xxx"}} → 强制调 xxx，且 xxx 必须存在于 masked_tools 里，
+# 否则 400
             response = await run_in_threadpool(
-                llm.chat_with_tools, locked_messages, tools=masked_tools, tool_choice="auto"
+                llm.chat_with_tools, locked_messages, tools=masked_tools,
+                tool_choice="auto"
+               # tool_choice={"type": "function", "function": {"name": module.tool_names[0]}}
             )
 
             logger.debug(session.sinfo + "branch A after llm call, response:\n%s", _format_response(response))
 
             tool_calls = getattr(response, "tool_calls", None)
-            logger.debug("===after ai, tool calls ===",tool_calls)
+            logger.debug("===after ai, tool calls ===%s",tool_calls)
             logger.debug(session.sinfo + f"[ask_skill] masked({wait_state}) elapsed="
                          f"{int((time.time()-t0)*1000)}ms tool_calls={'yes' if tool_calls else 'no'}")
 
@@ -178,8 +192,7 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
                     "content": response.content or "",
                     "tool_calls": [tc.model_dump() for tc in tool_calls],
                 })
-                logger.debug("===branch A,after ai, tool calls,locked_messages ===",locked_messages)
-
+                logger.debug("===branch A,locked_messages === append role=assistant \n%s", json.dumps(locked_messages, ensure_ascii=False, indent=2))
                 result = None
                 for tc in tool_calls:
                     last_tool_name = tc.function.name
@@ -187,9 +200,10 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
                     if last_tool_name != "cancel_skill":
                         if "phone" not in args or not args["phone"]:
                             args["phone"] = caller_phone
-                    logger.debug("===after ai, tool calls,last_tool_name ===",last_tool_name)
+                    logger.debug("===after ai, tool calls,last_tool_name ===%s",last_tool_name)
+                    logger.debug("===_dispatchA.....")
                     result = await _dispatch(wait_state, last_tool_name, session, args)
-                    logger.debug("===after _dispatch,result ===",result)
+                    logger.debug("===after _dispatchA,result ===%s",result)
                     result_json = json.dumps(result, ensure_ascii=False)
                     logger.debug(session.sinfo + f"[ask_skill] tool result: {result_json}")
                     locked_messages.append({
@@ -198,6 +212,7 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
                         "name": last_tool_name,
                         "content": result_json,
                     })
+                logger.debug("===branch A,locked_messages === append role=tool \n%s", json.dumps(locked_messages, ensure_ascii=False, indent=2))
 
                 # 根据统一 status 决定锁定状态
                 status = result.get("status") if result else SkillStatus.ERROR
@@ -205,6 +220,8 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
                     _set_wait_state(session, wait_state)  # 继续锁定在同一业务
                 else:
                     _set_wait_state(session, None)  # DONE / CANCELLED / ERROR 都解锁
+                    session.history.clear()
+                    skip_history = True
                 _clear_reject_count(session)
 
                 answer_text = await run_in_threadpool(llm.chat_with_tools, locked_messages)
@@ -221,6 +238,7 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
                                 f"force exit lock state={wait_state!r}, replay text through normal routing")
                     _set_wait_state(session, None)
                     _clear_reject_count(session)
+                    session.history.clear()
                     return await ask_skill(session, text)
                 # else: 保持锁定，下一轮继续
 
@@ -245,8 +263,8 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
 
             tool_choice = {"type": "function", "function": {"name": forced_tool_name}} if forced_tool_name else "auto"
             logger.debug(session.sinfo + "tool_choice: %s", json.dumps(tool_choice, ensure_ascii=False))
-            logger.debug(session.sinfo + "all_tools:\n%s",
-                         json.dumps(all_tools(), ensure_ascii=False, indent=2))
+            #logger.debug(session.sinfo + "all_tools:\n%s", json.dumps(all_tools(), ensure_ascii=False, indent=2))
+            logger.debug(session.sinfo + "all_tools:submitted")
 
             response = await run_in_threadpool(
                 llm.chat_with_tools, messages, tools=all_tools(), tool_choice=tool_choice
@@ -282,7 +300,7 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
                     result = {"status": SkillStatus.ERROR, "msg": f"未知工具: {last_tool_name}"}
                 else:
                     result = await _dispatch(matched_skill, last_tool_name, session, args)
-                    logger.debug(session.sinfo + f"[ask_skill] dispatch finished")
+                    logger.debug(session.sinfo + f"[ask_skill] dispatchB finished")
 
                 result_json = json.dumps(result, ensure_ascii=False)
                 logger.debug(session.sinfo + f"[ask_skill] tool result: name={last_tool_name} result={result_json}")
@@ -295,6 +313,7 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
 
             status = result.get("status") if result else SkillStatus.ERROR
             if matched_skill and status in _LOCKING_STATUSES:
+                session.history.clear()
                 _set_wait_state(session, matched_skill)
                 logger.debug(session.sinfo + f"_set_wait_state set wait state---> {matched_skill}")
             else:
@@ -302,16 +321,15 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
                 logger.debug(session.sinfo + f"_set_wait_state set wait state--> None")
 
             answer_text = await run_in_threadpool(llm.chat_with_tools, messages)
-            logger.debug(session.sinfo + "branch B,after 2nd llm call, answer_text:\n%s", answer_text)
 
         # ── 公共：日志 + history + 返回 ──────────────────────────────
-        logger.debug(session.sinfo + f"[ask_skill] after run run_in_threadpool total elapsed={int((time.time()-t0)*1000)}ms "
+        logger.debug(session.sinfo + f"[ask_skill] after branch A or B,after 2nd llm call  total elapsed={int((time.time()-t0)*1000)}ms "
                      f"skill={last_tool_name} answer={answer_text[:80] if answer_text else ''}")
-
-        session._history_add("user", text)
-        if answer_text and answer_text.strip():
-            session._history_add("assistant", answer_text)
-            session._history_trim(60)
+        if not skip_history:
+            session._history_add("user", text)
+            if answer_text and answer_text.strip():
+                session._history_add("assistant", answer_text)
+                session._history_trim(60)
 
         return ChatAnswer(
             code=CODE_OK,

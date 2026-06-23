@@ -16,6 +16,9 @@ import time
 from typing import Optional
 
 from skill.skill_base import SkillModule, SkillStatus, register_skill
+from skill.skill_base import SkillModule, SkillStatus, register_skill, \
+    skill_get, skill_set, skill_clear, skill_get_draft, skill_set_draft, \
+    skill_need, skill_pending, skill_done, skill_error, skill_merge_fields
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,12 @@ _FIELD_LABELS = {
     "need_callback": "是否需要人工回访",
 }
 
+_FIELD_META = {
+    "category":     ("投诉类型",     f"{'、'.join(_CATEGORY_ENUM)}"),
+    "content":      ("具体描述",     "30字以内"),
+    "expect":       ("期望处理方式", "退款、道歉、整改、其他"),
+    "need_callback":("是否需要人工回访", "是/否"),
+}
 
 # ══════════════════════════════════════════════════════════════
 # Tool Schema（手写，不依赖动态生成）
@@ -91,24 +100,8 @@ _TOOL_CANCEL = {
 # ══════════════════════════════════════════════════════════════
 # 字段 merge / 校验（本文件内部私有，不对外暴露通用接口）
 # ══════════════════════════════════════════════════════════════
-def _get_draft(session) -> dict:
-    return getattr(session, _DRAFT_KEY, {}) or {}
 
 
-def _set_draft(session, draft: dict) -> None:
-    setattr(session, _DRAFT_KEY, draft)
-
-
-def _clear_draft(session) -> None:
-    setattr(session, _DRAFT_KEY, {})
-
-
-def _merge_fields(draft: dict, **fields) -> dict:
-    for k, v in fields.items():
-        if v in (None, ""):
-            continue
-        draft[k] = v
-    return draft
 
 
 def _validate(draft: dict) -> Optional[str]:
@@ -121,15 +114,21 @@ def _missing(draft: dict) -> list:
     return [f for f in _REQUIRED_FIELDS if f not in draft or not draft[f]]
 
 
-def _format_confirm_text(draft: dict) -> str:
+def _format_confirm_text2(draft: dict) -> str:
     parts = [f"{_FIELD_LABELS[k]}：{draft[k]}" for k in _REQUIRED_FIELDS + _OPTIONAL_FIELDS if k in draft]
     return f"请确认以下投诉信息 — { '；'.join(parts) }。确认提交吗？"
 
+def _format_confirm_text(draft: dict) -> str:
+    parts = [f"{_FIELD_META[k][0]}：{draft[k]}" for k in _REQUIRED_FIELDS + _OPTIONAL_FIELDS if k in draft]
+    return f"请确认以下投诉信息 — {'；'.join(parts)}。确认提交吗？"
 
-def _format_missing_prompt(missing: list) -> str:
+def _format_missing_prompt2(missing: list) -> str:
     labels = [_FIELD_LABELS[m] for m in missing]
     return f"请问您的{ '、'.join(labels) }是？"
 
+def _format_missing_prompt(missing: list) -> str:
+    parts = [f"{_FIELD_META[m][0]}（{_FIELD_META[m][1]}）" for m in missing]
+    return f"请问您的{'、'.join(parts)}是？"
 
 async def _create_ticket(phone: str, draft: dict) -> dict:
     # TODO: 替换为真实落库逻辑
@@ -142,17 +141,18 @@ async def _create_ticket(phone: str, draft: dict) -> dict:
 # handle —— 对外统一入口
 # ══════════════════════════════════════════════════════════════
 async def handle(
-    session,
-    phone: str,
-    category: Optional[str] = None,
-    content: Optional[str] = None,
-    expect: Optional[str] = None,
-    need_callback: Optional[str] = None,
-    confirmed: bool = False,
+        session,
+        tool_name: str = None,
+        phone: str = "",
+        category: Optional[str] = None,
+        content: Optional[str] = None,
+        expect: Optional[str] = None,
+        need_callback: Optional[str] = None,
+        confirmed: bool = False,
 ) -> dict:
-    draft = _get_draft(session)
-    draft = _merge_fields(draft, category=category, content=content, expect=expect, need_callback=need_callback)
-    _set_draft(session, draft)
+    draft = skill_get_draft(session)
+    draft = skill_merge_fields(draft, category=category, content=content, expect=expect, need_callback=need_callback)
+    skill_set_draft(session, draft)
 
     err = _validate(draft)
     if err:
@@ -166,7 +166,8 @@ async def handle(
         return {"status": SkillStatus.PENDING_CONFIRM, "msg": _format_confirm_text(draft)}
 
     result = await _create_ticket(phone, draft)
-    _clear_draft(session)
+
+    skill_clear(session, _DRAFT_KEY)
     return {
         "status": SkillStatus.DONE,
         "msg": f"您的投诉已受理，工单号 {result['ticket_id']}，我们将尽快跟进处理",
@@ -178,7 +179,7 @@ async def handle(
 # 锁定 prompt
 # ══════════════════════════════════════════════════════════════
 def build_locked_prompt(session, caller_phone: str) -> str:
-    draft = _get_draft(session)
+    draft = skill_get_draft(session)
     if draft:
         collected = "\n".join(f"  - {_FIELD_LABELS[k]}：{v}" for k, v in draft.items() if k in _FIELD_LABELS)
     else:

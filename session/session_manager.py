@@ -94,17 +94,16 @@ class LlmClient:
     # session/session_manager.py 顶部加一个本地函数，不依赖外部文件
 
 
+    import time
+    import logging
+
     def chat_with_tools(self, messages: list, tools: list = None, tool_choice: str = "auto"):
-        """
-        支持 Tool Calling 的 chat。
-        - tools=None 时退化为普通 chat，返回 message.content 字符串
-        - tools 有值时返回完整 message 对象（含 tool_calls）
-        """
-        logger.debug("chat_with_tools send to AI url=" + str(self._client.base_url) + " model=" + self._model)
+        # 1. 记录开始时间
+        start_time = time.time()
 
-
-        AiConfig.log(logger, "log.messages.chars", "messages", _format_messages(messages))
-        #AiConfig.log(logger, "log.messages.chars", "messages", str(messages))
+        logger.debug(f"chat_with_tools start: model={self._model}")
+        # 打印输入消息
+        AiConfig.log(logger, "log.messages.chars", "input_messages", _format_messages(messages))
 
         kwargs = dict(
             model       = self._model,
@@ -117,15 +116,29 @@ class LlmClient:
             kwargs["tools"]       = tools
             kwargs["tool_choice"] = tool_choice
 
-        resp = self._client.chat.completions.create(**kwargs)
-        msg  = resp.choices[0].message
+        # 2. 发起请求
+        try:
+            resp = self._client.chat.completions.create(**kwargs)
+            msg  = resp.choices[0].message
 
-        # 有 tool_calls → 返回完整 message 对象，ask_skill 需要 msg.tool_calls
-        if getattr(msg, "tool_calls", None):
-            return msg
+            # 3. 记录响应日志 (根据内容类型打印不同摘要)
+            log_content = msg.tool_calls if getattr(msg, "tool_calls", None) else msg.content
+            #   AiConfig.log(logger, "log.messages.chars", "output_response", str(log_content))
 
-        # 无 tool_calls → 直接返回文本，和 chat() 保持一致
-        return msg.content.strip() if msg.content else ""
+            # 4. 计算并打印耗时
+            duration = (time.time() - start_time) * 1000  # 毫秒
+            logger.info(f"chat_with_tools finished in {duration:.2f}ms")
+
+            # 返回处理逻辑
+            if getattr(msg, "tool_calls", None):
+                return msg
+            return msg.content.strip() if msg.content else ""
+
+        except Exception as e:
+            logger.error(f"chat_with_tools failed: {str(e)}")
+            raise e
+
+
 
 from intent.intent_dispatcher  import IntentDispatcher
 from intent.intent_result      import Intent
@@ -616,6 +629,27 @@ def _init_with_type(type_: str, config_dir: str) -> None:
 # Java:     return session;
 # Java: }
 # ===========================================================================
+LOG_DIR = os.environ.get(
+    "LOG_DIR",
+    AiConfig.getStringConfig("log.dir", "/home/call/py-voice-agent/logs")
+)
+def clear_log_file():
+    # 优先获取配置，若配置不存在则默认为 False
+    should_clear = AiConfig.getBooleanConfig("log.clear.newsession", False)
+
+    if not should_clear:
+        return
+
+    log_path = os.path.join(LOG_DIR, "a.log")
+    # 1. 关闭 file_handler 避免占用 (可选，视具体运行环境而定)
+    # _file_handler.close()
+
+    # 2. 以 w 模式打开并关闭，即刻清空内容
+    with open(log_path, 'w'):
+        pass
+
+    print(f"Log file {log_path} has been cleared.")
+
 def get_session(session_id: str) -> ChatSession:
     # Java: if (ACTIVE_ROUTER == null) throw new IllegalStateException(...)
     if not _initialized:
@@ -627,6 +661,7 @@ def get_session(session_id: str) -> ChatSession:
         # Java: ChatSession session = sessions.get(clientId);
         # Java: if (session == null) {
         if session_id not in sessions:
+            clear_log_file()
             # Java: session = new ChatSession(ACTIVE_ROUTER, ACTIVE_EMBED, ACTIVE_TABLE);
             session = ChatSession(session_id)
 
@@ -671,6 +706,7 @@ def get_session(session_id: str) -> ChatSession:
             sessions[session_id] = session
 
             # Java: logger.debug("为客户端 [ sn=" + clientId + "] 创建了新会话...");
+            logger.debug("....................................................................................")
             logger.debug("session [ sn=" + session_id + "] created")
 
         # Java: lastActiveTime.put(clientId, System.currentTimeMillis());

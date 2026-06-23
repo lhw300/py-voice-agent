@@ -2,7 +2,8 @@
 # Java: package com.lcallai;
 import json
 from typing import List, Optional
-
+import logging
+logger = logging.getLogger(__name__)
 
 class ChatHistory:
     """
@@ -144,6 +145,7 @@ class ChatHistory:
     }
     """
     def clear(self) -> None:
+        logger.debug("session  clear chat history")
         self._messages.clear()
 
     """
