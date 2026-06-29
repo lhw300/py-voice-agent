@@ -22,7 +22,7 @@ import logging
 import time
 from starlette.concurrency import run_in_threadpool
 from typing import Optional, TYPE_CHECKING
-
+from datetime import date
 from models import ChatAnswer, Action, CODE_OK
 from skill.skill_base import (
     SkillStatus, SKILL_REGISTRY, get_skill,
@@ -95,6 +95,10 @@ def _format_response(response) -> str:
     if hasattr(response, "model_dump"):
         return json.dumps(response.model_dump(), ensure_ascii=False, indent=2)
     return str(response)
+def _clear_skill(session, skill_name: str) -> None:
+    module = get_skill(skill_name)
+    if module and module.clear:
+        module.clear(session)
 
 # status → 是否应该保持锁定（由总控统一解读，业务模块不需要关心 wait_state 怎么存）
 _LOCKING_STATUSES = (SkillStatus.NEED_INFO, SkillStatus.PENDING_CONFIRM)
@@ -164,7 +168,8 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
             locked_non_system = [m for m in locked_history if m.get("role") != "system"]
 
             locked_messages = [{"role": "system", "content": locked_prompt}]
-            locked_messages.extend(locked_non_system)
+            if module.use_history_in_locked:
+                locked_messages.extend(locked_non_system)
             locked_messages.append({"role": "user", "content": text})
 # masked_tools 是工具列表，告诉 LLM 有哪些工具可用。
 # tool_choice 是调用策略，告诉 LLM 怎么用这些工具：
@@ -192,7 +197,7 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
                     "content": response.content or "",
                     "tool_calls": [tc.model_dump() for tc in tool_calls],
                 })
-                logger.debug("===branch A,locked_messages === append role=assistant \n%s", json.dumps(locked_messages, ensure_ascii=False, indent=2))
+                logger.debug("===branch A,locked_messages === append role=assistant \n");#, json.dumps(locked_messages, ensure_ascii=False, indent=2))
                 result = None
                 for tc in tool_calls:
                     last_tool_name = tc.function.name
@@ -212,7 +217,7 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
                         "name": last_tool_name,
                         "content": result_json,
                     })
-                logger.debug("===branch A,locked_messages === append role=tool \n%s", json.dumps(locked_messages, ensure_ascii=False, indent=2))
+                logger.debug("===branch A,locked_messages === append role=tool \n ");#, json.dumps(locked_messages, ensure_ascii=False, indent=2))
 
                 # 根据统一 status 决定锁定状态
                 status = result.get("status") if result else SkillStatus.ERROR
@@ -220,9 +225,19 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
                     _set_wait_state(session, wait_state)  # 继续锁定在同一业务
                 else:
                     _set_wait_state(session, None)  # DONE / CANCELLED / ERROR 都解锁
+                    _clear_skill(session, wait_state)
                     session.history.clear()
                     skip_history = True
                 _clear_reject_count(session)
+
+                locked_messages[0] = {
+                    "role": "system",
+                    "content": (
+                        "你是智能电话客服播报助手。"
+                        "根据工具返回的 msg 字段，用自然口语转述给客户，不得使用 markdown、换行、emoji、序号。"
+                        "不要调用任何工具，只输出纯文本。"
+                    )
+                }
 
                 answer_text = await run_in_threadpool(llm.chat_with_tools, locked_messages)
                 logger.debug(session.sinfo + "branch A after 2nd llm call, answer_text:\n%s", answer_text)
@@ -238,8 +253,21 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
                                 f"force exit lock state={wait_state!r}, replay text through normal routing")
                     _set_wait_state(session, None)
                     _clear_reject_count(session)
+                    _clear_skill(session, wait_state)
                     session.history.clear()
-                    return await ask_skill(session, text)
+                    #return await ask_skill(session, text)
+                    return ChatAnswer(
+                        code=CODE_OK,
+                        answer="抱歉，未能获取到有效信息，本流程已结束，如有其他问题欢迎继续咨询。",
+                        action=Action.NONE,
+                        intent="COMMAND",
+                        sub_intent=last_tool_name,
+                        hit_source="skill",
+                    )
+
+
+
+
                 # else: 保持锁定，下一轮继续
 
         # ════════════════════════════════════════════════════════
@@ -347,9 +375,14 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
 
 def _build_normal_prompt(caller_phone: str) -> str:
     """正常状态下的总控 prompt，路由规则汇总各业务的触发关键词"""
-    lines = [f"# Role: 智能客服助理\n", f"## Context\n- 当前来电手机号: {caller_phone}（系统自动注入，禁止向用户索取）\n", "## Routing Rules\n"]
+
+
+    today = date.today().strftime("%Y-%m-%d")  # "2026-06-23"
+
+
+    lines = [f"# Role: 智能客服助理\n", f"## Context\n- 当前来电手机号: {caller_phone}（系统自动注入，禁止向用户索取）,今天的日期是 {today}\n", "## Routing Rules\n"]
     for name, module in SKILL_REGISTRY.items():
-        kw_sample = "、".join(module.trigger_keywords[:4])
+        kw_sample = "、".join(module.trigger_keywords[:10])
         lines.append(f"- 用户提及「{kw_sample}」等 → 调用 {module.tool_names[0]}")
     lines.append("- 其他（问候/知识问题/闲聊/无关话题）→ 不调任何工具，输出空字符串\n")
     lines.append("## 重要约束")
@@ -357,4 +390,5 @@ def _build_normal_prompt(caller_phone: str) -> str:
     lines.append("2. 没有进行中的流程时，按用户当前意图正常路由")
     lines.append("3. 工具返回的原始数据不得直接输出，必须用自然语言组织后回复")
     lines.append("4. 不得暴露工具名称、参数名称等内部信息给用户")
+    lines.append("5. 回复必须是纯文本，不得使用 markdown、换行、emoji、序号，用自然口语连续表达，适合直接语音播放")
     return "\n".join(lines)

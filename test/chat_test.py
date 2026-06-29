@@ -1,8 +1,9 @@
-
 # chat_test.py
 import requests
 import random
+import time
 from pprint import pprint
+
 BASE_URL = "http://localhost:7626"
 
 def chat(vo_id: str, text: str, sn: str) -> str:
@@ -17,17 +18,18 @@ def chat(vo_id: str, text: str, sn: str) -> str:
         "vo_id":      vo_id,
         "text":       text
     }
+    t0 = time.time()
     resp = requests.post(url, json=payload)
+    elapsed = int((time.time() - t0) * 1000)
     pprint(resp.json())
     if resp.status_code == 200:
-        return resp.json().get("answer", "")
+        return resp.json().get("answer", ""), elapsed
     else:
-        return f"[错误 {resp.status_code}] {resp.text}"
+        return f"[错误 {resp.status_code}] {resp.text}", elapsed
 
 
 if __name__ == "__main__":
     sn = str(random.randint(1000, 9999))
-    vo_id = "filling_ai"
     vo_id = "ai_send"
     print(f"=== 交互测试 vo_id={vo_id} sn={sn} ===")
     print("输入 'quit' 或 'exit' 退出，输入 'new' 开始新会话\n")
@@ -51,5 +53,5 @@ if __name__ == "__main__":
             print(f"--- 新会话 sn={sn} ---\n")
             continue
 
-        answer = chat(vo_id, user_input, sn)
-        print(f"AI: {answer}\n")
+        answer, elapsed = chat(vo_id, user_input, sn)
+        print(f"AI: {answer}  [{elapsed}ms]\n")

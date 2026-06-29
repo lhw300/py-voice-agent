@@ -38,8 +38,8 @@ skill_base.py
 
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Callable, Protocol
-
-
+import logging
+logger = logging.getLogger(__name__)
 class SkillStatus:
     """
     所有业务模块的返回 status 必须从这几个值里选，
@@ -62,7 +62,8 @@ class SkillModule:
     build_locked_prompt: Callable[[object, str], str]   # (session, caller_phone) -> prompt str
     handle: Callable                              # async (session, **kwargs) -> dict，必须含 status
     tool_names: List[str] = None                  # 该业务对应的 tool function name 列表（用于状态恢复时识别）
-
+    clear: Callable[[object], None] = None      # (session) -> None，clear internal state draft
+    use_history_in_locked: bool = True          # internet_repair 设 False
     def __post_init__(self):
         if self.tool_names is None:
             self.tool_names = [t["function"]["name"] for t in self.tools]
@@ -117,16 +118,13 @@ def skill_clear(session, *keys) -> None:
     for key in keys:
         setattr(session, key, None)
 
-def skill_get_draft(session, key: str) -> dict:
-    return getattr(session, key, None) or {}
 
-def skill_set_draft(session, key: str, draft: dict) -> None:
-    setattr(session, key, draft)
 
 def skill_merge_fields(draft: dict, **fields) -> dict:
     for k, v in fields.items():
         if v not in (None, ""):
             draft[k] = v
+            logger.debug(f"skill_merge| k={k} v={v} ")
     return draft
 
 # ── 返回值构造 ──────────────────────────────

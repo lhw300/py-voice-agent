@@ -15,15 +15,14 @@ import logging
 import time
 from typing import Optional
 
-from skill.skill_base import SkillModule, SkillStatus, register_skill
 from skill.skill_base import SkillModule, SkillStatus, register_skill, \
-    skill_get, skill_set, skill_clear, skill_get_draft, skill_set_draft, \
+    skill_get, skill_set, skill_clear, \
     skill_need, skill_pending, skill_done, skill_error, skill_merge_fields
 
 logger = logging.getLogger(__name__)
 
 _DRAFT_KEY = "_complaint_draft"  # session 上暂存本次投诉收集到的字段
-
+#draft — 用户逐步填写、尚未提交的表单字段，如 {category, content, expect}
 # 本业务自己定义需要哪些字段，写死在这个文件里，不走外部 schema 配置
 _REQUIRED_FIELDS = ["category", "content"]
 _OPTIONAL_FIELDS = ["expect", "need_callback"]
@@ -105,6 +104,12 @@ _TOOL_CANCEL = {
 
 
 def _validate(draft: dict) -> Optional[str]:
+    logger.debug(f"_validate | draft contents: {draft}")
+    if "category" in draft:
+        logger.debug(f"_validate|  draft[category] { draft['category']} ")
+    else:
+        logger.debug(f"_validate| category  in draft")
+
     if "category" in draft and draft["category"] not in _CATEGORY_ENUM:
         return f"投诉类型必须是以下之一：{ '、'.join(_CATEGORY_ENUM) }"
     return None
@@ -150,24 +155,28 @@ async def handle(
         need_callback: Optional[str] = None,
         confirmed: bool = False,
 ) -> dict:
-    draft = skill_get_draft(session)
+    draft = getattr(session, _DRAFT_KEY, None) or {}
     draft = skill_merge_fields(draft, category=category, content=content, expect=expect, need_callback=need_callback)
-    skill_set_draft(session, draft)
+    setattr(session, _DRAFT_KEY, draft)
 
     err = _validate(draft)
+    logger.debug(f"_validate err {err}")
     if err:
         return {"status": SkillStatus.NEED_INFO, "msg": err}
 
     missing = _missing(draft)
+    logger.debug(f"_validate missing {missing}")
     if missing:
         return {"status": SkillStatus.NEED_INFO, "msg": _format_missing_prompt(missing)}
+    logger.debug(f"confirmed {confirmed}")
 
     if not confirmed:
         return {"status": SkillStatus.PENDING_CONFIRM, "msg": _format_confirm_text(draft)}
 
     result = await _create_ticket(phone, draft)
 
-    skill_clear(session, _DRAFT_KEY)
+
+    setattr(session, _DRAFT_KEY, None)
     return {
         "status": SkillStatus.DONE,
         "msg": f"您的投诉已受理，工单号 {result['ticket_id']}，我们将尽快跟进处理",
@@ -179,7 +188,7 @@ async def handle(
 # 锁定 prompt
 # ══════════════════════════════════════════════════════════════
 def build_locked_prompt(session, caller_phone: str) -> str:
-    draft = skill_get_draft(session)
+    draft = getattr(session, _DRAFT_KEY, None) or {}
     if draft:
         collected = "\n".join(f"  - {_FIELD_LABELS[k]}：{v}" for k, v in draft.items() if k in _FIELD_LABELS)
     else:
@@ -195,12 +204,15 @@ def build_locked_prompt(session, caller_phone: str) -> str:
 
 ## 规则
 - 用户提供了新字段信息 → 调用 complaint_skill(phone, 对应字段=值, confirmed=false)
-- 已收集到完整确认话术后，用户明确确认（如"对"、"确认"、"提交"）
+- 已收集到完整确认话术后，用户明确确认（如"对"、"确认"、"提交"、"嗯"）
   → 调用 complaint_skill(phone, confirmed=true)，无需重传已有字段
 - 用户要修改某个已收集字段 → 只传该字段新值即可，confirmed=false
 - 用户明确放弃/取消 → 调用 cancel_skill
 - 其他任何输入（既不提供信息、也不确认、也不取消）→ 不调工具，自然语言追问缺失信息
 - 禁止讨论快递查询、宽带报修、知识问答等任何其他话题
+## 输出格式
+- 回复必须是纯文本，不得使用 markdown、bullet point、换行、emoji、序号
+- 所有内容用自然口语连续表达，适合直接语音播放
 """
 
 
@@ -214,4 +226,5 @@ register_skill(SkillModule(
     locked_tools=[_TOOL_COMPLAINT, _TOOL_CANCEL],
     build_locked_prompt=build_locked_prompt,
     handle=handle,
+    clear=lambda session: setattr(session, _DRAFT_KEY, None),
 ))

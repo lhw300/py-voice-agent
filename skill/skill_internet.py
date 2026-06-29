@@ -1,13 +1,13 @@
 """
 skill_internet_repair.py
 ─────────────────────────────────────────────────────────────
-宽带报修业务模块。
+Broadband repair skill module.
 
-流程：
-  场景1（能查到地址）：地址确认 → 故障描述 → 联系电话 → 预约时间 → 汇总确认 → 生成工单
-  场景2（查不到地址）：收集账号 → 确认账号 → 查地址 → 口述地址 → 确认地址 → 同场景1后续
+Flow:
+  Scene 1 (address found):   confirm address → fault desc → contact phone → appointment time → summary confirm → create order
+  Scene 2 (address missing): collect account → confirm account → query address → dictate address → confirm address → same as scene 1
 
-状态机由代码驱动，LLM 只负责提取 affirm / value 两个字段。
+State machine is code-driven; LLM only extracts two fields: affirm / value.
 """
 
 import logging
@@ -19,20 +19,29 @@ from skill.skill_base import SkillModule, SkillStatus, register_skill
 logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════
-# Session 存储 key
+# Session storage keys
 # ══════════════════════════════════════════════════════════════
-_DRAFT_KEY  = "_repair_draft"    # 已确认的字段 {address, fault_desc, contact_phone, contact_time}
-_STAGE_KEY  = "_repair_stage"    # 当前步骤字符串
-_TEMP_KEY   = "_repair_temp"     # 待确认的临时值（确认前不写入 draft）
-_CALLER_KEY = "_repair_caller"   # 保存 caller_phone 供各步使用
+_DRAFT_KEY  = "_repair_draft"    # confirmed fields: {address, fault_desc, contact_phone, contact_time}
+_STAGE_KEY  = "_repair_stage"    # current stage string
+_TEMP_KEY   = "_repair_temp"     # pending value awaiting confirmation (not written to draft yet)
+_CALLER_KEY = "_repair_caller"   # caller phone number, shared across stages
 
 # ══════════════════════════════════════════════════════════════
-# Stage 常量
+# Flow configuration — toggle each collection step on/off
+# ══════════════════════════════════════════════════════════════
+_FLOW_CONFIG = {
+    "collect_fault":  True,   # fault description
+    "collect_phone":  True,   # contact phone number
+    "collect_time":   False,  # appointment time (currently disabled)
+}
+
+# ══════════════════════════════════════════════════════════════
+# Stage constants
 # ══════════════════════════════════════════════════════════════
 S_ADDR_CONFIRM    = "addr_confirm"
-S_COLLECT_ACCOUNT = "collect_account"
+S_ACCOUNT_INPUT = "account_input"
 S_ACCOUNT_CONFIRM = "account_confirm"
-S_INPUT_ADDRESS   = "input_address"
+S_ADDRESS_INPUT   = "address_input"
 S_ADDRESS_CONFIRM = "address_confirm"
 S_FAULT_INPUT     = "fault_input"
 S_FAULT_CONFIRM   = "fault_confirm"
@@ -43,9 +52,14 @@ S_TIME_INPUT      = "time_input"
 S_TIME_CONFIRM    = "time_confirm"
 S_SUMMARY_CONFIRM = "summary_confirm"
 
+# 只有在确认类 stage 才显示待确认内容，收集类 stage 不显示
+_CONFIRM_STAGES = {
+    S_ACCOUNT_CONFIRM, S_ADDRESS_CONFIRM, S_FAULT_CONFIRM,
+    S_PHONE_CONFIRM, S_TIME_CONFIRM, S_ADDR_CONFIRM, S_SUMMARY_CONFIRM
+}
 
 # ══════════════════════════════════════════════════════════════
-# Session 读写工具函数
+# Session read/write helpers
 # ══════════════════════════════════════════════════════════════
 def _get_stage(session) -> Optional[str]:
     return getattr(session, _STAGE_KEY, None)
@@ -53,6 +67,15 @@ def _get_stage(session) -> Optional[str]:
 def _set_stage(session, stage: str):
     setattr(session, _STAGE_KEY, stage)
     logger.debug("[repair] stage → %s", stage)
+
+def _set_stage2(session, stage: str):
+    current = getattr(session, _STAGE_KEY, None)
+    setattr(session, _STAGE_KEY, stage)
+    logger.debug("[repair] stage → %s", stage)
+    if current != stage:
+        session.history.clear()
+        logger.debug("[repair] history cleared on stage change %s → %s", current, stage)
+
 
 def _get_draft(session) -> dict:
     return getattr(session, _DRAFT_KEY, None) or {}
@@ -70,12 +93,13 @@ def _get_caller(session) -> str:
     return getattr(session, _CALLER_KEY, "") or ""
 
 def _clear_all(session):
+    """Clear all repair-related state from the session."""
     for key in (_DRAFT_KEY, _STAGE_KEY, _TEMP_KEY, _CALLER_KEY):
         setattr(session, key, None)
 
 
 # ══════════════════════════════════════════════════════════════
-# 返回值工具函数
+# Return value helpers
 # ══════════════════════════════════════════════════════════════
 def _need(msg: str) -> dict:
     return {"status": SkillStatus.NEED_INFO, "msg": msg}
@@ -91,77 +115,96 @@ def _error(msg: str) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════
-# Mock DB 查询（TODO：替换为真实实现）
+# Mock DB queries — replace with real implementations
 # ══════════════════════════════════════════════════════════════
 async def _query_address_by_phone(phone: str) -> Optional[str]:
-    """用来电号码查标准地址，查不到返回 None"""
+    """Look up registered address by caller phone. Returns None if not found."""
     mock = {"13800000000": "广东省广州市天河区天河路100号"}
     return mock.get(phone)
 
 async def _query_address_by_account(account: str) -> Optional[str]:
-    """用宽带账号或绑定手机查地址，查不到返回 None"""
+    """Look up address by broadband account or bound phone. Returns None if not found."""
     mock = {"8888": "广东省广州市越秀区中山路88号"}
     return mock.get(account)
 
 async def _create_order(draft: dict) -> str:
-    """生成工单，返回工单号"""
+    """Create a repair order and return the order ID."""
     order_id = f"WB{int(time.time())}"
     logger.info("[repair] order created: %s | %s", order_id, draft)
     return order_id
 
 
 # ══════════════════════════════════════════════════════════════
-# 汇总确认文本
+# Summary confirmation text — built dynamically from _FLOW_CONFIG
 # ══════════════════════════════════════════════════════════════
 def _format_summary(draft: dict) -> str:
-    return (
-        f"请确认报修信息：\n"
-        f"  地址：{draft.get('address', '-')}\n"
-        f"  故障描述：{draft.get('fault_desc', '-')}\n"
-        f"  联系电话：{draft.get('contact_phone', '-')}\n"
-        #f"  预约时间：{draft.get('contact_time', '-')}\n"
-        f"确认提交吗？"
-    )
+    lines = ["请确认报修信息：", f"  地址：{draft.get('address', '-')}"]
+    if _FLOW_CONFIG["collect_fault"]:
+        lines.append(f"  故障描述：{draft.get('fault_desc', '-')}")
+    if _FLOW_CONFIG["collect_phone"]:
+        lines.append(f"  联系电话：{draft.get('contact_phone', '-')}")
+    if _FLOW_CONFIG["collect_time"]:
+        lines.append(f"  预约时间：{draft.get('contact_time', '-')}")
+    lines.append("确认提交吗？")
+    return "\n".join(lines)
 
 
 # ══════════════════════════════════════════════════════════════
-# 各阶段处理函数
+# Stage handlers
 # ══════════════════════════════════════════════════════════════
 async def _stage_init(session, caller_phone: str) -> dict:
-    """入口：查地址，决定走场景1还是场景2"""
+    """Entry point: look up address to decide scene 1 or scene 2."""
     setattr(session, _CALLER_KEY, caller_phone)
     _set_draft(session, {})
 
     address = await _query_address_by_phone(caller_phone)
-    logger.debug("_stage_init _query_address_by_phone %s  ", address)
+    logger.debug("_stage_init _query_address_by_phone %s", address)
     if address:
         _set_temp(session, address)
         _set_stage(session, S_ADDR_CONFIRM)
         return _pending(f"您的报修地址是：{address}，确认吗？")
     else:
-        _set_stage(session, S_COLLECT_ACCOUNT)
+        _set_stage(session, S_ACCOUNT_INPUT)
         return _need("未查询到您的地址信息，请提供宽带账号或绑定手机号码。")
 
 
 async def _stage_addr_confirm(session, affirm, value) -> dict:
-    """场景1：确认系统查到的地址"""
+    """Scene 1: confirm the address found in the system."""
     if affirm is True:
         draft = _get_draft(session)
         draft["address"] = _get_temp(session)
         _set_draft(session, draft)
-        _set_stage(session, S_FAULT_INPUT)
-        return _need("好的，请简要描述您的故障情况。")
+        _set_temp(session, None)
+       
+        # advance to next enabled step
+        if _FLOW_CONFIG["collect_fault"]:
+            _set_stage(session, S_FAULT_INPUT)
+            return _need("好的，请简要描述您的故障情况。")
+        elif _FLOW_CONFIG["collect_phone"]:
+            caller = _get_caller(session)
+            _set_stage(session, S_PHONE_ASK)
+            return _need(f"好的，联系电话是否使用来电号码 {caller}？")
+        else:
+            _set_stage(session, S_SUMMARY_CONFIRM)
+            return _pending(_format_summary(draft))
     elif affirm is False:
-        # 否认地址 → 转场景2，替人报修
-        _set_stage(session, S_COLLECT_ACCOUNT)
+        # user denies address → switch to scene 2 (repair for someone else)
+        _set_temp(session, None)
+        _set_stage(session, S_ACCOUNT_INPUT)
+       
         return _need("好的，请提供宽带账号或绑定手机号码。")
     else:
         temp = _get_temp(session)
         return _pending(f"您的报修地址是：{temp}，请确认是否正确？")
 
 
-async def _stage_collect_account(session, affirm, value) -> dict:
-    """场景2：收集宽带账号或绑定手机"""
+async def _stage_account_input(session, affirm, value) -> dict:
+    """Scene 2: collect broadband account or bound phone number."""
+    # affirm=True 且带 value：上一轮 LLM 没调工具，这一轮合并处理
+    if affirm is True and value:
+        _set_temp(session, value)
+        _set_stage(session, S_ACCOUNT_CONFIRM)
+        return await _stage_account_confirm(session, affirm=True, value=value)
     if not value:
         return _need("请提供宽带账号或绑定手机号码。")
     _set_temp(session, value)
@@ -170,27 +213,34 @@ async def _stage_collect_account(session, affirm, value) -> dict:
 
 
 async def _stage_account_confirm(session, affirm, value) -> dict:
-    """确认账号后查地址"""
+    """Confirm account then query address."""
     if affirm is False:
-        _set_stage(session, S_COLLECT_ACCOUNT)
+        _set_temp(session, None)
+        _set_stage(session, S_ACCOUNT_INPUT)
         return _need("好的，请重新提供宽带账号或绑定手机号码。")
     if affirm is True:
         account = _get_temp(session)
+        _set_temp(session, None)
         address = await _query_address_by_account(account)
         if address:
-            # 查到地址，不展示，让客户口述
-            _set_stage(session, S_INPUT_ADDRESS)
+            # address found — do not reveal it, ask user to dictate instead
+            _set_stage(session, S_ADDRESS_INPUT)
             return _need("好的，请口述您的报修地址。")
         else:
-            _set_stage(session, S_COLLECT_ACCOUNT)
+            _set_stage(session, S_ACCOUNT_INPUT)
+           
             return _need("抱歉，未能查到该账号的信息，请重新提供宽带账号或绑定手机号码。")
-    # 未明确表态
+    # no clear response — repeat confirmation
     account = _get_temp(session)
     return _pending(f"您提供的账号是：{account}，请确认是否正确？")
 
 
-async def _stage_input_address(session, affirm, value) -> dict:
-    """口述地址"""
+async def _stage_address_input(session, affirm, value) -> dict:
+    """Ask user to dictate the repair address."""
+    if affirm is True and value:
+        _set_temp(session, value)
+        _set_stage(session, S_ADDRESS_CONFIRM)
+        return await _stage_address_confirm(session, affirm=True, value=value)
     if not value:
         return _need("请口述您的报修地址。")
     _set_temp(session, value)
@@ -199,15 +249,28 @@ async def _stage_input_address(session, affirm, value) -> dict:
 
 
 async def _stage_address_confirm(session, affirm, value) -> dict:
-    """确认口述地址"""
+    """Confirm the dictated address."""
     if affirm is True:
         draft = _get_draft(session)
         draft["address"] = _get_temp(session)
         _set_draft(session, draft)
-        _set_stage(session, S_FAULT_INPUT)
-        return _need("好的，请简要描述您的故障情况。")
+        _set_temp(session, None)
+       
+        # advance to next enabled step
+        if _FLOW_CONFIG["collect_fault"]:
+            _set_stage(session, S_FAULT_INPUT)
+            return _need("好的，请简要描述您的故障情况。")
+        elif _FLOW_CONFIG["collect_phone"]:
+            caller = _get_caller(session)
+            _set_stage(session, S_PHONE_ASK)
+            return _need(f"好的，联系电话是否使用来电号码 {caller}？")
+        else:
+            _set_stage(session, S_SUMMARY_CONFIRM)
+            return _pending(_format_summary(draft))
     elif affirm is False:
-        _set_stage(session, S_INPUT_ADDRESS)
+        _set_temp(session, None)
+        _set_stage(session, S_ADDRESS_INPUT)
+       
         return _need("好的，请重新口述您的报修地址。")
     else:
         temp = _get_temp(session)
@@ -215,7 +278,9 @@ async def _stage_address_confirm(session, affirm, value) -> dict:
 
 
 async def _stage_fault_input(session, affirm, value) -> dict:
-    """收集故障描述"""
+
+    """Collect fault description — no pass-through, fault text is ambiguous."""
+
     if not value:
         return _need("请简要描述您的故障情况。")
     _set_temp(session, value)
@@ -224,16 +289,26 @@ async def _stage_fault_input(session, affirm, value) -> dict:
 
 
 async def _stage_fault_confirm(session, affirm, value) -> dict:
-    """确认故障描述"""
+    """Confirm fault description."""
     if affirm is True:
+        # ignore spurious value — LLM may pass unrelated content (e.g. phone number)
+        # always read fault_desc from _TEMP_KEY which was set in fault_input
         draft = _get_draft(session)
         draft["fault_desc"] = _get_temp(session)
         _set_draft(session, draft)
+        _set_temp(session, None)
         caller = _get_caller(session)
-        _set_stage(session, S_PHONE_ASK)
-        return _need(f"好的，联系电话是否使用来电号码 {caller}？")
+        # advance to next enabled step
+        if _FLOW_CONFIG["collect_phone"]:
+            _set_stage(session, S_PHONE_ASK)
+            return _need(f"好的，联系电话是否使用来电号码 {caller}？")
+        else:
+            _set_stage(session, S_SUMMARY_CONFIRM)
+            return _pending(_format_summary(draft))
     elif affirm is False:
+        _set_temp(session, None)
         _set_stage(session, S_FAULT_INPUT)
+       
         return _need("好的，请重新描述您的故障情况。")
     else:
         temp = _get_temp(session)
@@ -241,27 +316,35 @@ async def _stage_fault_confirm(session, affirm, value) -> dict:
 
 
 async def _stage_phone_ask(session, affirm, value) -> dict:
-    """问是否用来电号码作为联系电话"""
     if affirm is True:
         caller = _get_caller(session)
         draft = _get_draft(session)
         draft["contact_phone"] = caller
         _set_draft(session, draft)
-        #_set_stage(session, S_TIME_INPUT)
-        #return _need("好的，请说出预约上门时间。")
-        _set_stage(session, S_SUMMARY_CONFIRM)
-        return _pending(_format_summary(draft))
-
+        if _FLOW_CONFIG["collect_time"]:
+            _set_stage(session, S_TIME_INPUT)
+            return _need("好的，请说出预约上门时间。")
+        else:
+            _set_stage(session, S_SUMMARY_CONFIRM)
+            return _pending(_format_summary(draft))
     elif affirm is False:
         _set_stage(session, S_PHONE_INPUT)
         return _need("请提供您的联系电话。")
+    elif value:                          # ← 新增：用户直接给了号码
+        _set_stage(session, S_PHONE_INPUT)
+        return await _stage_phone_input(session, affirm=None, value=value)
     else:
         caller = _get_caller(session)
         return _need(f"联系电话是否使用来电号码 {caller}？")
 
 
 async def _stage_phone_input(session, affirm, value) -> dict:
-    """收集其他联系电话"""
+    """Collect an alternative contact phone number."""
+    if affirm is True and value:
+        _set_temp(session, value)
+        _set_stage(session, S_PHONE_CONFIRM)
+        return await _stage_phone_confirm(session, affirm=True, value=value)
+
     if not value:
         return _need("请提供您的联系电话。")
     _set_temp(session, value)
@@ -270,15 +353,23 @@ async def _stage_phone_input(session, affirm, value) -> dict:
 
 
 async def _stage_phone_confirm(session, affirm, value) -> dict:
-    """确认联系电话"""
+    """Confirm the contact phone number."""
     if affirm is True:
         draft = _get_draft(session)
         draft["contact_phone"] = _get_temp(session)
         _set_draft(session, draft)
-        _set_stage(session, S_TIME_INPUT)
-        return _need("好的，请说出预约上门时间。")
+        _set_temp(session, None)
+        # advance to next enabled step
+        if _FLOW_CONFIG["collect_time"]:
+            _set_stage(session, S_TIME_INPUT)
+            return _need("好的，请说出预约上门时间。")
+        else:
+            _set_stage(session, S_SUMMARY_CONFIRM)
+            return _pending(_format_summary(draft))
     elif affirm is False:
+        _set_temp(session, None)
         _set_stage(session, S_PHONE_INPUT)
+       
         return _need("好的，请重新提供您的联系电话。")
     else:
         temp = _get_temp(session)
@@ -286,7 +377,12 @@ async def _stage_phone_confirm(session, affirm, value) -> dict:
 
 
 async def _stage_time_input(session, affirm, value) -> dict:
-    """收集预约时间"""
+    """Collect appointment time."""
+    if affirm is True and value:
+        _set_temp(session, value)
+        _set_stage(session, S_TIME_CONFIRM)
+        return await _stage_time_confirm(session, affirm=True, value=value)
+
     if not value:
         return _need("请说出预约上门时间，例如明天上午、后天下午两点等。")
     _set_temp(session, value)
@@ -295,15 +391,18 @@ async def _stage_time_input(session, affirm, value) -> dict:
 
 
 async def _stage_time_confirm(session, affirm, value) -> dict:
-    """确认预约时间"""
+    """Confirm appointment time."""
     if affirm is True:
         draft = _get_draft(session)
         draft["contact_time"] = _get_temp(session)
         _set_draft(session, draft)
+        _set_temp(session, None)
         _set_stage(session, S_SUMMARY_CONFIRM)
         return _pending(_format_summary(draft))
     elif affirm is False:
+        _set_temp(session, None)
         _set_stage(session, S_TIME_INPUT)
+       
         return _need("好的，请重新说出预约上门时间。")
     else:
         temp = _get_temp(session)
@@ -311,7 +410,7 @@ async def _stage_time_confirm(session, affirm, value) -> dict:
 
 
 async def _stage_summary_confirm(session, affirm, value) -> dict:
-    """汇总确认，提交工单"""
+    """Final summary confirmation — submit order on approval."""
     if affirm is True:
         draft = _get_draft(session)
         order_id = await _create_order(draft)
@@ -319,37 +418,42 @@ async def _stage_summary_confirm(session, affirm, value) -> dict:
         return _done(f"报修工单已提交，工单号：{order_id}，我们将尽快安排上门处理，感谢您的耐心等待。")
     elif affirm is False:
         draft = _get_draft(session)
-        # 如果 value 里说了要改哪项，直接跳转
+        # if user specified which field to change, jump directly
         if value:
             v = value
             if any(k in v for k in ["地址", "address"]):
-                _set_stage(session, S_INPUT_ADDRESS)
+                _set_stage(session, S_ADDRESS_INPUT)
                 return _need("好的，请重新口述您的报修地址。")
-            if any(k in v for k in ["故障", "fault"]):
+            if _FLOW_CONFIG["collect_fault"] and any(k in v for k in ["故障", "fault"]):
                 _set_stage(session, S_FAULT_INPUT)
                 return _need("好的，请重新描述您的故障情况。")
-            if any(k in v for k in ["电话", "phone", "号码"]):
+            if _FLOW_CONFIG["collect_phone"] and any(k in v for k in ["电话", "phone", "号码"]):
                 caller = _get_caller(session)
                 _set_stage(session, S_PHONE_ASK)
                 return _need(f"好的，联系电话是否使用来电号码 {caller}？")
-            if any(k in v for k in ["时间", "预约", "time"]):
+            if _FLOW_CONFIG["collect_time"] and any(k in v for k in ["时间", "预约", "time"]):
                 _set_stage(session, S_TIME_INPUT)
                 return _need("好的，请重新说出预约上门时间。")
-        # 未指定修改哪项，让客户说
-        return _need(
-            f"好的，请问您需要修改哪项信息？\n"
-            f"  1. 地址：{draft.get('address', '-')}\n"
-            f"  2. 故障描述：{draft.get('fault_desc', '-')}\n"
-            f"  3. 联系电话：{draft.get('contact_phone', '-')}\n"
-            f"  4. 预约时间：{draft.get('contact_time', '-')}"
-        )
+        # user did not specify — list only the enabled fields
+        options = [f"  1. 地址：{draft.get('address', '-')}"]
+        idx = 2
+        if _FLOW_CONFIG["collect_fault"]:
+            options.append(f"  {idx}. 故障描述：{draft.get('fault_desc', '-')}")
+            idx += 1
+        if _FLOW_CONFIG["collect_phone"]:
+            options.append(f"  {idx}. 联系电话：{draft.get('contact_phone', '-')}")
+            idx += 1
+        if _FLOW_CONFIG["collect_time"]:
+            options.append(f"  {idx}. 预约时间：{draft.get('contact_time', '-')}")
+        return _need("好的，请问您需要修改哪项信息？\n" + "\n".join(options))
     else:
+        # no clear response — repeat summary
         draft = _get_draft(session)
         return _pending(_format_summary(draft))
 
 
 # ══════════════════════════════════════════════════════════════
-# 统一 handle 入口
+# Unified handle entry point
 # ══════════════════════════════════════════════════════════════
 async def handle(session, tool_name: str = None, phone: str = "", affirm=None, value: str = None, **kwargs) -> dict:
     stage = _get_stage(session)
@@ -360,9 +464,9 @@ async def handle(session, tool_name: str = None, phone: str = "", affirm=None, v
 
     dispatch = {
         S_ADDR_CONFIRM:    _stage_addr_confirm,
-        S_COLLECT_ACCOUNT: _stage_collect_account,
+        S_ACCOUNT_INPUT: _stage_account_input,
         S_ACCOUNT_CONFIRM: _stage_account_confirm,
-        S_INPUT_ADDRESS:   _stage_input_address,
+        S_ADDRESS_INPUT:   _stage_address_input,
         S_ADDRESS_CONFIRM: _stage_address_confirm,
         S_FAULT_INPUT:     _stage_fault_input,
         S_FAULT_CONFIRM:   _stage_fault_confirm,
@@ -375,6 +479,7 @@ async def handle(session, tool_name: str = None, phone: str = "", affirm=None, v
     }
 
     fn = dispatch.get(stage)
+    logger.debug("[repair] dispatch.get stage: %s fn=%s", stage,fn)
     if fn is None:
         logger.error("[repair] unknown stage: %s", stage)
         return _error(f"内部错误：未知步骤 {stage}")
@@ -383,22 +488,42 @@ async def handle(session, tool_name: str = None, phone: str = "", affirm=None, v
 
 
 # ══════════════════════════════════════════════════════════════
-# 锁定 prompt
+# Locked prompt
 # ══════════════════════════════════════════════════════════════
 _STAGE_HINTS = {
     S_ADDR_CONFIRM:    "等待客户确认系统查到的地址（是/否）",
-    S_COLLECT_ACCOUNT: "等待客户提供宽带账号或绑定手机号码",
+    #S_ACCOUNT_INPUT:    "等待客户提供宽带账号或绑定手机号码",
+    S_ACCOUNT_INPUT: "等待客户提供宽带账号或绑定手机号码",
     S_ACCOUNT_CONFIRM: "等待客户确认账号（是/否）",
-    S_INPUT_ADDRESS:   "等待客户口述报修地址",
+    #S_ADDRESS_INPUT:   "等待客户口述报修地址",
+    S_ADDRESS_INPUT: "等待客户口述报修地址，客户说的任何地址描述都直接调工具传入",
     S_ADDRESS_CONFIRM: "等待客户确认口述地址（是/否）",
     S_FAULT_INPUT:     "等待客户描述故障情况",
     S_FAULT_CONFIRM:   "等待客户确认故障描述（是/否）",
     S_PHONE_ASK:       "等待客户确认是否使用来电号码作为联系电话（是/否）",
-    S_PHONE_INPUT:     "等待客户提供联系电话",
+    S_PHONE_INPUT:     "等待客户提供联系电话 ",
     S_PHONE_CONFIRM:   "等待客户确认联系电话（是/否）",
     S_TIME_INPUT:      "等待客户说出预约上门时间",
     S_TIME_CONFIRM:    "等待客户确认预约时间（是/否）",
     S_SUMMARY_CONFIRM: "等待客户确认所有报修信息并提交（是/否），或指定修改某项",
+
+}
+
+_FORCE_RULE_STAGES = {
+    S_ACCOUNT_INPUT:   "客户本轮任何输入都视为账号，禁止自然语言回复，必须调工具",
+    S_ADDRESS_INPUT:   "客户本轮任何输入都视为地址，禁止自然语言回复，必须调工具",
+    S_FAULT_INPUT:     "客户本轮任何输入都视为故障描述，禁止自然语言回复，必须调工具",
+    S_PHONE_INPUT:     "客户本轮任何输入都视为联系电话，禁止自然语言回复，必须调工具",
+    S_TIME_INPUT:      "客户本轮任何输入都视为预约时间，禁止自然语言回复，必须调工具",
+    S_ADDR_CONFIRM:    "禁止自然语言回复，必须调工具",
+    S_ACCOUNT_CONFIRM: "禁止自然语言回复，必须调工具",
+    S_ADDRESS_CONFIRM: "禁止自然语言回复，必须调工具",
+    S_FAULT_CONFIRM:   "禁止自然语言回复，必须调工具",
+    S_PHONE_ASK:       "禁止自然语言回复，必须调工具",
+    S_PHONE_CONFIRM:   "禁止自然语言回复，必须调工具",
+    S_TIME_CONFIRM:    "禁止自然语言回复，必须调工具",
+
+    S_SUMMARY_CONFIRM: "禁止自然语言回复，必须调工具；客户说出字段名（地址/故障/电话号码联系电话）表示要修改该项，调用 internet_repair_collect(affirm=false, value=客户说的内容)",
 }
 
 
@@ -406,20 +531,20 @@ def build_locked_prompt(session, caller_phone: str) -> str:
     stage = _get_stage(session) or "初始化"
     hint = _STAGE_HINTS.get(stage, stage)
     draft = _get_draft(session)
-    temp = _get_temp(session)
 
     collected = ""
     if draft:
-        lines = []
         labels = {
             "address": "地址", "fault_desc": "故障描述",
             "contact_phone": "联系电话", "contact_time": "预约时间"
         }
-        for k, v in draft.items():
-            lines.append(f"  - {labels.get(k, k)}：{v}")
+        lines = [f"  - {labels.get(k, k)}：{v}" for k, v in draft.items()]
         collected = "\n已确认字段：\n" + "\n".join(lines)
 
-    temp_hint = f"\n待确认内容：{temp}" if temp else ""
+    temp = _get_temp(session)
+    temp_hint = f"\n待确认内容：{temp}" if (temp and stage in _CONFIRM_STAGES) else ""
+
+    extra_rule = f"- 【强制】{_FORCE_RULE_STAGES[stage]}\n" if stage in _FORCE_RULE_STAGES else ""
 
     return f"""# Role: 智能客服助理（宽带报修模式）
 
@@ -428,18 +553,21 @@ def build_locked_prompt(session, caller_phone: str) -> str:
 - 当前步骤: {hint}{collected}{temp_hint}
 
 ## 规则
-- 客户提供了信息（账号/地址/故障描述/电话/时间等）→ 调用 internet_repair_collect(value=客户说的内容)
-- 客户明确确认（是/对/没错/确认/提交等）→ 调用 internet_repair_collect(affirm=true)
-- 客户明确否认（不对/不是/错了/重新等）→ 调用 internet_repair_collect(affirm=false)
+- 客户提供了信息（账号/地址/故障描述/电话/时间等）→ 调用 internet_repair_collect(value=客户说的内容)，不管格式是否正确，原样传入
+- 客户明确确认（嗯/是/对/没错/确认/提交等）→ 调用 internet_repair_collect(affirm=true)
+- 客户明确否认（不对/不是/错了/重新/不低等）→ 调用 internet_repair_collect(affirm=false)
 - 客户既提供信息又确认 → 调用 internet_repair_collect(affirm=true, value=内容)
 - 客户明确放弃/取消 → 调用 cancel_skill
 - 其他无关输入 → 不调工具，根据当前步骤自然语言引导客户
 - 禁止讨论快递查询、投诉等其他话题
+{extra_rule}
+## 输出格式
+- 回复必须是纯文本，不得使用 markdown、bullet point、换行、emoji、序号
+- 所有内容用自然口语连续表达，适合直接语音播放
 """
 
-
 # ══════════════════════════════════════════════════════════════
-# Tool Schema
+# Tool schemas
 # ══════════════════════════════════════════════════════════════
 _TOOL_ENTRY = {
     "type": "function",
@@ -493,17 +621,18 @@ _TOOL_CANCEL = {
 
 
 # ══════════════════════════════════════════════════════════════
-# 注册
+# Skill registration
 # ══════════════════════════════════════════════════════════════
 register_skill(SkillModule(
     name="internet_repair",
     tools=[_TOOL_ENTRY],
-    trigger_keywords=["宽带坏了", "网络不通", "宽带报修", "网络故障", "宽带故障", "断网", "网络断了"],
+    trigger_keywords=["宽带坏了", "网络不通", "宽带报修", "网络故障", "宽带故障",
+                      "断网", "网络断了", "我要报修", "宽带慢", "网速慢",
+                      "宽带太慢", "网速太慢","上网慢", "网络慢","网断了"],
     locked_tools=[_TOOL_COLLECT, _TOOL_CANCEL],
     build_locked_prompt=build_locked_prompt,
     handle=handle,
     tool_names=["internet_repair_skill", "internet_repair_collect"],
+    clear=lambda session: _clear_all(session),
+    use_history_in_locked=False,
 ))
-
-
-
