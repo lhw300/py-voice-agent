@@ -10,12 +10,12 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
+from fastapi.staticfiles import StaticFiles
 import ai_config as AiConfig
 
 # ── Config dir：必须先确定，不能走 ai.conf fallback（它是定位 ai.conf 的输入）──
 CONFIG_DIR     = os.environ.get("AI_CONFIG_DIR",  "/home/call/py-voice-agent")
-LLM_CONFIG_DIR = os.environ.get("LLM_CONFIG_DIR", "/home/call/py-voice-agent")
+
 
 # ── 新增：提前 init AiConfig，使下面的 LOG_DIR 等参数能读到 ai.conf ──────────
 # AiConfig.reload() 是幂等的，session_manager.init() 之后还会再 init 一次，
@@ -104,7 +104,7 @@ app.include_router(auth_router.router)
 def health():
     return {"status": "ok", "config_file": AiConfig.configFile}
 
-
+app.mount("/aiweb", StaticFiles(directory="web/dist", html=True), name="static")
 if __name__ == "__main__":
     reload = os.environ.get("APP_RELOAD", "false").lower() == "true"
     uvicorn.run("main:app", host="0.0.0.0", port=7626, reload=False)

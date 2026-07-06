@@ -62,6 +62,7 @@ class ChatAnswer(BaseModel):
     category:      Optional[str]  = None   # knowledge category matched
     sentiment:     Optional[str]  = None   # POSITIVE / NEGATIVE / NEUTRAL
     hit_source: str = "rag"
+    cost:          Optional[dict] = None
     # =========================================================================
     # Instance methods — Java: shouldTerminate / needsTts / isNegativeFeedback
     # =========================================================================

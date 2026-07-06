@@ -332,10 +332,12 @@ class ChatSession:
     def ask(self, text: str) -> ChatAnswer:
         if not text or not text.strip():
             return ChatAnswer(code=-1, answer="输入为空")
-
+        if not hasattr(self, "_stage_costs"):        # ← 补上这两行
+            self._stage_costs = {}
         t0 = time.time()
         intentResult: IntentResult = self.intentClassifier.classify(text, self.history)
         t1 = time.time()
+        self._stage_costs["classify"] = int((t1 - t0) * 1000)
         logger.debug(self.sinfo + " [1] intent classification elapsed: " + str(int((t1 - t0) * 1000)) + " ms  intent=" + str(intentResult.intent))
 
         if intentResult.intent == Intent.QUERY and intentResult.category is None:
@@ -361,8 +363,10 @@ class ChatSession:
 
         # K1 exact cache lookup — QUERY only
         if intentResult.intent == Intent.QUERY:
+            t_k1_start = time.time()
             query_key = intentResult.refined_query or text
             cached = k1_get(query_key)
+            self._stage_costs["k1"] = int((time.time() - t_k1_start) * 1000)
             if cached:
                 logger.debug(self.sinfo + "[K1] cache hit, skip RAG")
                 ca = ChatAnswer(**cached)
@@ -371,6 +375,11 @@ class ChatSession:
                 if ca.answer and ca.answer.strip():
                     self._history_add("assistant", ca.answer)
                     self._history_trim(MAX_HISTORY)
+
+                ca.cost = {**self._stage_costs, "ask_total": int((time.time() - t0) * 1000)}
+                cost_str = ", ".join(f"{k} {v}ms" for k, v in ca.cost.items())
+                logger.debug(self.sinfo + f"[ask] answer={ca.answer}  cost: {cost_str}")
+                self._stage_costs = {}
                 return ca
             else:
                 logger.debug(self.sinfo + "[K1] NO cache hit")
@@ -381,14 +390,39 @@ class ChatSession:
         ca.fill_from_intent(self.currentIntentResult)
 
         t2 = time.time()
-        logger.debug(self.sinfo + " [2] Handler elapsed: " + str(int((t2 - t1) * 1000)) + " ms")
-        logger.debug(self.sinfo + " [total] ask() full pipeline elapsed: " + str(int((t2 - t0) * 1000)) + " ms")
-        logger.debug(self.sinfo + "[ask] answer=" + str(ca.answer)[:100] if ca.answer else "[ask] answer=None")
+        self._stage_costs["handler"] = int((t2 - t1) * 1000)
+        total_ms = int((t2 - t0) * 1000)
+        # ── 汇总耗时，拼进日志和响应 ──────────────────────────────
+        cost_parts = []
+        if "tools" in self._stage_costs:
+            cost_parts.append(f"tools {self._stage_costs['tools']}ms")
+        cost_parts.append(f"classify {self._stage_costs['classify']}ms")
+        if "k1" in self._stage_costs:
+            cost_parts.append(f"k1 {self._stage_costs['k1']}ms")
+        if "k2" in self._stage_costs:
+            cost_parts.append(f"k2 {self._stage_costs['k2']}ms")
+        if "retrieval" in self._stage_costs:                                    # ← 新增
+            cost_parts.append(f"retrieval {self._stage_costs['retrieval']}ms")
+        if "final_ask" in self._stage_costs:                                    # ← 新增
+            cost_parts.append(f"final_ask {self._stage_costs['final_ask']}ms")
+        cost_parts.append(f"handler {self._stage_costs['handler']}ms")
+        cost_parts.append(f"ask {total_ms}ms")
+        cost_str = ", ".join(cost_parts)
+
+        ca.cost = {**self._stage_costs, "ask_total": total_ms}
+
+
+
+        logger.debug(self.sinfo + " [2] Handler elapsed: " + str(self._stage_costs["handler"]) + " ms")
+        logger.debug(self.sinfo + " [total] ask() full pipeline elapsed: " + str(total_ms) + " ms")
 
         if ca.answer and ca.answer.strip():
             self._history_add("assistant", ca.answer)
             self._history_trim(MAX_HISTORY)
 
+        logger.debug(self.sinfo + f"[ask] answer={ca.answer}  cost: {cost_str}")   # ← 你要的最终行
+
+        self._stage_costs = {}   # 清空，避免污染下一轮对话
         return ca
 
     """
@@ -564,7 +598,101 @@ class ChatSession:
         logger.debug(self.sinfo + "_is_fallback checking... "+str(result))
         return result
 
-    def askRerank(self, text: str, isrewrite: bool = False,allow_cache_write: bool = True) -> ChatAnswer:
+    def askRerank(self, text: str, isrewrite: bool = False, allow_cache_write: bool = True) -> ChatAnswer:
+        logger.debug(self.sinfo + "🚀 executing advanced RAG pipeline (refactored ask3)...isrewrite " + str(isrewrite))
+        ca = ChatAnswer(code=-1, answer=None)
+
+        if not text or not text.strip():
+            ca.code = -1
+            ca.answer = AiConfig.getStringConfig("response.fallback.empty_input", "Input is empty.")
+            return ca
+
+        if not hasattr(self, "_stage_costs"):
+            self._stage_costs = {}
+
+        t_k2_start = time.time()
+
+        norm   = convert(text)
+        vector = self.embeddingClient.embed(norm)
+
+        # K2 semantic cache lookup
+        cached = k2_get(norm, vector)
+
+        self._stage_costs["k2"] = int((time.time() - t_k2_start) * 1000)
+
+        if cached:
+            logger.debug(self.sinfo + "[K2] cache hit, skip RAG")
+            ca = ChatAnswer(**cached)
+            ca.fill_from_intent(self.currentIntentResult)
+            ca.hit_source = "k2"
+            return ca
+        else:
+            logger.debug(self.sinfo + "[K2] No cache hit ")
+        processedText = text[:MAX_MESSAGE_LENGTH] if len(text) > MAX_MESSAGE_LENGTH else text
+
+        try:
+            requeryStart   = time.time()
+            optimizedQuery = processedText
+            if isrewrite:
+                optimizedQuery = self._performQueryRewrite(processedText)
+            logger.debug(self.sinfo + "rewrite elapsed=" + str(int((time.time() - requeryStart) * 1000)) + " ms")
+
+            retrieval_start = time.time()                                          # ← 新增
+            finalItems = self._performTwoStageRetrievalAsyncBatch(optimizedQuery, vector)
+            self._stage_costs["retrieval"] = int((time.time() - retrieval_start) * 1000)   # ← 新增
+
+            max_c = AiConfig.getIntConfig("log.candidates.max", 3)
+            if max_c > 0:
+                logger.debug(self.sinfo + "🔍 candidate list after two-stage retrieval:")
+                for item in finalItems[:max_c]:
+                    logger.debug(self.sinfo + "distance: " + self.formatDouble(item.get("distance", 0))
+                                 + " category:" + str(item.get("category"))
+                                 + " | summary: " + str(item.get("summary")))
+
+            if not finalItems:
+                return self._handleEmptyResult(processedText, ca)
+            if finalItems[0].get("distance", 1.0) > self.similarityThreshold:
+                return self._handleLowSimilarity(processedText, ca)
+
+            fullCtx_parts = []
+            for i, item in enumerate(finalItems):
+                fullCtx_parts.append(
+                    str(i + 1) + ". 【" + str(item.get("category", ""))
+                    + "-" + str(item.get("summary", "")) + "】" + str(item.get("content", ""))
+                )
+            fullCtx = "\n".join(fullCtx_parts)
+
+            AiConfig.log(logger, "log.fullctx.chars", "executeFinalChat fullCtx", fullCtx, self.sinfo)
+
+            final_ask_start = time.time()                                          # ← 新增
+            ans = self._executeFinalChat(fullCtx, "")
+            self._stage_costs["final_ask"] = int((time.time() - final_ask_start) * 1000)   # ← 新增
+
+            if ans is not None:
+                ca.answer = ans
+                ca.code = 0
+                min_len = AiConfig.getIntConfig("k2.minanswer.length", 35)
+                cache_update_enabled = AiConfig.getStringConfig("cache.update.k1k2", "true").lower() == "true"
+
+                logger.debug(f"{self.sinfo}cache.update.k1k2  {cache_update_enabled}")
+                if (cache_update_enabled and allow_cache_write
+                        and not self._is_fallback(ans) and len(str(ans)) >= min_len):
+                    logger.debug(self.sinfo + "[K1] put... ")
+                    k1_put(norm, ca.model_dump())
+                    logger.debug(self.sinfo + "[K2] put... ")
+                    k2_put(norm, vector, ca.model_dump())
+            else:
+                ca.code = -500
+                ca.answer = AiConfig.getStringConfig("response.fallback.system_error", "System error, please try again.")
+
+            return ca
+
+        except Exception as e:
+            logger.error(self.sinfo + str(e), exc_info=True)
+            ca.code = -1
+            ca.answer = AiConfig.getStringConfig("response.fallback.system_error", "System error, please try again.")
+            return ca
+    def askRerank222(self, text: str, isrewrite: bool = False,allow_cache_write: bool = True) -> ChatAnswer:
         logger.debug(self.sinfo + "🚀 executing advanced RAG pipeline (refactored ask3)...isrewrite " + str(isrewrite))
         ca = ChatAnswer(code=-1, answer=None)
 
@@ -574,12 +702,17 @@ class ChatSession:
             ca.answer = AiConfig.getStringConfig("response.fallback.empty_input", "Input is empty.")
             return ca
 
+        if not hasattr(self, "_stage_costs"):
+            self._stage_costs = {}
 
+        t_k2_start = time.time()          # ← 新增：K2阶段计时起点（含embed+比对）
         norm   = convert(text)
         vector = self.embeddingClient.embed(norm)
 
         # K2 semantic cache lookup
         cached = k2_get(norm, vector)
+        self._stage_costs["k2"] = int((time.time() - t_k2_start) * 1000)   # ← 新增：记录耗时
+
         if cached:
             logger.debug(self.sinfo + "[K2] cache hit, skip RAG")
             ca = ChatAnswer(**cached)
@@ -642,7 +775,7 @@ class ChatSession:
                 #ca.answer = "AI 响应为空，请稍后重试。"
                 ca.answer = AiConfig.getStringConfig("response.fallback.system_error", "System error, please try again.")
 
-
+            self._stage_costs["rag"] = int((time.time() - requeryStart) * 1000)
 
             return ca
 

@@ -8,6 +8,6 @@ openpyxl
 redis
 sentence-transformers
 pymongo 
-python-multipart
+python-multipart
 pymysql 
 pycryptodome

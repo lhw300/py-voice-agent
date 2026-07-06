@@ -125,6 +125,263 @@ async def _dispatch(skill_name: str, tool_name: str, session, args: dict) -> dic
 # ══════════════════════════════════════════════════════════════
 async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
     import ai_config as AiConfig
+    logger.debug(session.sinfo + " text %s", text)
+    if AiConfig.getStringConfig("skill_tools.enabled", "true").lower() != "true":
+        return None
+
+    caller_phone = getattr(session, "_caller_phone", "") or ""
+    t0 = time.time()
+    last_tool_name = None
+    answer_text = None
+    skip_history = False
+
+    if not hasattr(session, "_stage_costs"):        # ← 新增：统一在函数入口初始化
+        session._stage_costs = {}
+
+    try:
+        llm = session.router.finalLlm() if session.router else None
+        if llm is None:
+            logger.warning(session.sinfo + "[ask_skill] router/llm not available, fallback to ask()")
+            return None
+
+        wait_state = _get_wait_state(session)
+        logger.debug(session.sinfo + " _get_wait_state %s ", wait_state)
+        if _is_abort(text) and not wait_state:
+            logger.debug(session.sinfo + "[ask_skill] abort signal (no state), fallback")
+            return None
+
+        # ════════════════════════════════════════════════════════
+        # 分支 A：有等待状态 → 只暴露当前业务的工具（Tool Masking）
+        # ════════════════════════════════════════════════════════
+        if wait_state and wait_state in SKILL_REGISTRY:
+            logger.debug(session.sinfo + " 分支 A：有等待状态 → 只暴露当前业务的工具 ...")
+            module = get_skill(wait_state)
+            locked_prompt = module.build_locked_prompt(session, caller_phone)
+            masked_tools = module.locked_tools
+
+            logger.debug("=== locked_prompt ===")
+            logger.debug("=== masked_tools ===")
+            logger.debug(json.dumps(masked_tools, ensure_ascii=False, indent=2))
+
+            locked_history = session.history.toJsonArrayWithWindow()
+            locked_non_system = [m for m in locked_history if m.get("role") != "system"]
+
+            locked_messages = [{"role": "system", "content": locked_prompt}]
+            if module.use_history_in_locked:
+                locked_messages.extend(locked_non_system)
+            locked_messages.append({"role": "user", "content": text})
+
+            t_tool_a = time.time()                                          # ← 新增
+            response = await run_in_threadpool(
+                llm.chat_with_tools, locked_messages, tools=masked_tools,
+                tool_choice="auto"
+            )
+            session._stage_costs["tools"] = int((time.time() - t_tool_a) * 1000)   # ← 新增
+
+            logger.debug(session.sinfo + "branch A after llm call, response:\n%s", _format_response(response))
+
+            tool_calls = getattr(response, "tool_calls", None)
+            logger.debug("===after ai, tool calls ===%s", tool_calls)
+            logger.debug(session.sinfo + f"[ask_skill] masked({wait_state}) elapsed="
+                                         f"{int((time.time()-t0)*1000)}ms tool_calls={'yes' if tool_calls else 'no'}")
+
+            if tool_calls:
+                locked_messages.append({
+                    "role": "assistant",
+                    "content": response.content or "",
+                    "tool_calls": [tc.model_dump() for tc in tool_calls],
+                })
+                logger.debug("===branch A,locked_messages === append role=assistant \n")
+                result = None
+
+                t_skill_a = time.time()                                     # ← 新增
+                for tc in tool_calls:
+                    last_tool_name = tc.function.name
+                    args = json.loads(tc.function.arguments)
+                    if last_tool_name != "cancel_skill":
+                        if "phone" not in args or not args["phone"]:
+                            args["phone"] = caller_phone
+                    logger.debug("===after ai, tool calls,last_tool_name ===%s", last_tool_name)
+                    logger.debug("===_dispatchA.....")
+                    result = await _dispatch(wait_state, last_tool_name, session, args)
+                    logger.debug("===after _dispatchA,result ===%s", result)
+                    result_json = json.dumps(result, ensure_ascii=False)
+                    logger.debug(session.sinfo + f"[ask_skill] tool result: {result_json}")
+                    locked_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "name": last_tool_name,
+                        "content": result_json,
+                    })
+                session._stage_costs["skill_exec"] = int((time.time() - t_skill_a) * 1000)   # ← 新增
+                logger.debug("===branch A,locked_messages === append role=tool \n ")
+
+                status = result.get("status") if result else SkillStatus.ERROR
+                if status in _LOCKING_STATUSES:
+                    _set_wait_state(session, wait_state)
+                else:
+                    _set_wait_state(session, None)
+                    _clear_skill(session, wait_state)
+                    session.history.clear()
+                    skip_history = True
+                _clear_reject_count(session)
+
+                locked_messages[0] = {
+                    "role": "system",
+                    "content": (
+                        "你是智能电话客服播报助手。"
+                        "根据工具返回的 msg 字段，用自然口语转述给客户，不得使用 markdown、换行、emoji、序号。"
+                        "不要调用任何工具，只输出纯文本。"
+                    )
+                }
+
+                t_reply_a = time.time()                                     # ← 新增
+                answer_text = await run_in_threadpool(llm.chat_with_tools, locked_messages)
+                session._stage_costs["final_reply"] = int((time.time() - t_reply_a) * 1000)   # ← 新增
+                logger.debug(session.sinfo + "branch A after 2nd llm call, answer_text:\n%s", answer_text)
+
+            else:
+                answer_text = response if isinstance(response, str) else (response.content or "")
+                last_tool_name = module.tool_names[0]
+                logger.debug(session.sinfo + "[ask_skill] masked no-tool, use LLM text as reply")
+
+                reject_count = _inc_reject_count(session)
+                if reject_count >= _REJECT_MAX:
+                    logger.info(session.sinfo + f"[ask_skill] reject limit reached ({reject_count}), "
+                                                f"force exit lock state={wait_state!r}, replay text through normal routing")
+                    _set_wait_state(session, None)
+                    _clear_reject_count(session)
+                    _clear_skill(session, wait_state)
+                    session.history.clear()
+
+                    total_ms = int((time.time() - t0) * 1000)                          # ← 新增
+                    cost = {**session._stage_costs, "skill_total": total_ms}            # ← 新增
+                    session._stage_costs = {}                                          # ← 新增
+                    return ChatAnswer(
+                        code=CODE_OK,
+                        answer="抱歉，未能获取到有效信息，本流程已结束，如有其他问题欢迎继续咨询。",
+                        action=Action.NONE,
+                        intent="COMMAND",
+                        sub_intent=last_tool_name,
+                        hit_source="skill",
+                        cost=cost,                                                       # ← 新增
+                    )
+
+        # ════════════════════════════════════════════════════════
+        # 分支 B：正常状态 → 全量工具，关键词/auto 路由
+        # ════════════════════════════════════════════════════════
+        else:
+            logger.debug(session.sinfo + " 全量工具 分支B ...")
+            history_msgs = session.history.toJsonArrayWithWindow()
+            non_system = [m for m in history_msgs if m.get("role") != "system"]
+
+            skill_system = _build_normal_prompt(caller_phone)
+            messages = [{"role": "system", "content": skill_system}] + non_system
+            messages.append({"role": "user", "content": text})
+
+            kw_forced = find_skill_by_keyword(text)
+            forced_tool_name = None
+            if kw_forced:
+                module = get_skill(kw_forced)
+                forced_tool_name = module.tool_names[0]
+                logger.debug(session.sinfo + f"[ask_skill] keyword forced → {kw_forced}")
+
+            tool_choice = {"type": "function", "function": {"name": forced_tool_name}} if forced_tool_name else "auto"
+            logger.debug(session.sinfo + "tool_choice: %s", json.dumps(tool_choice, ensure_ascii=False))
+            logger.debug(session.sinfo + "all_tools:submitted")
+
+            response = await run_in_threadpool(
+                llm.chat_with_tools, messages, tools=all_tools(), tool_choice=tool_choice
+            )
+            logger.debug(session.sinfo + "branch B,after llm call, response:\n%s", _format_response(response))
+
+            tool_calls = getattr(response, "tool_calls", None)
+
+            elapsed = int((time.time() - t0) * 1000)
+            session._stage_costs["tools"] = elapsed
+            #logger.debug(session.sinfo + f"[ask_skill] normal routing elapsed={elapsed}ms tool_calls=no")
+            logger.debug(session.sinfo + f"[ask_skill] normal routing elapsed={elapsed}ms tool_calls={'yes' if tool_calls else 'no'}")
+            if not tool_calls:
+                logger.debug(session.sinfo + f" return None , not tool_call")
+                return None  # 正常状态下 no-tool → fallback RAG，_stage_costs里的"tools"会被后续ask()继续累加使用
+
+            messages.append({
+                "role": "assistant",
+                "content": response.content or "",
+                "tool_calls": [tc.model_dump() for tc in tool_calls],
+            })
+
+            result = None
+            matched_skill = None
+
+            t_skill_b = time.time()                                         # ← 新增
+            for tc in tool_calls:
+                last_tool_name = tc.function.name
+                args = json.loads(tc.function.arguments)
+                if "phone" not in args or not args["phone"]:
+                    args["phone"] = caller_phone
+
+                matched_skill = find_skill_by_tool_name(last_tool_name)
+                if not matched_skill:
+                    logger.warning(session.sinfo + f"[ask_skill] unknown skill tool: {last_tool_name}")
+                    result = {"status": SkillStatus.ERROR, "msg": f"未知工具: {last_tool_name}"}
+                else:
+                    result = await _dispatch(matched_skill, last_tool_name, session, args)
+                    logger.debug(session.sinfo + f"[ask_skill] dispatchB finished")
+
+                result_json = json.dumps(result, ensure_ascii=False)
+                logger.debug(session.sinfo + f"[ask_skill] tool result: name={last_tool_name} result={result_json}")
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "name": last_tool_name,
+                    "content": result_json,
+                })
+            session._stage_costs["skill_exec"] = int((time.time() - t_skill_b) * 1000)   # ← 新增
+
+            status = result.get("status") if result else SkillStatus.ERROR
+            if matched_skill and status in _LOCKING_STATUSES:
+                session.history.clear()
+                _set_wait_state(session, matched_skill)
+                logger.debug(session.sinfo + f"_set_wait_state set wait state---> {matched_skill}")
+            else:
+                _set_wait_state(session, None)
+                logger.debug(session.sinfo + f"_set_wait_state set wait state--> None")
+
+            t_reply_b = time.time()                                          # ← 新增
+            answer_text = await run_in_threadpool(llm.chat_with_tools, messages)
+            session._stage_costs["final_reply"] = int((time.time() - t_reply_b) * 1000)   # ← 新增
+
+        # ── 公共：日志 + history + 返回 ──────────────────────────────
+        total_ms = int((time.time() - t0) * 1000)
+        logger.debug(session.sinfo + f"[ask_skill] after branch A or B,after 2nd llm call  total elapsed={total_ms}ms "
+                                     f"skill={last_tool_name} answer={answer_text[:80] if answer_text else ''}")
+        if not skip_history:
+            session._history_add("user", text)
+            if answer_text and answer_text.strip():
+                session._history_add("assistant", answer_text)
+                session._history_trim(60)
+
+        cost = {**session._stage_costs, "skill_total": total_ms}   # ← 新增
+        session._stage_costs = {}                                  # ← 新增
+
+        return ChatAnswer(
+            code=CODE_OK,
+            answer=answer_text,
+            action=Action.NONE,
+            intent="COMMAND",
+            sub_intent=last_tool_name,
+            hit_source="skill",
+            cost=cost,                                              # ← 新增
+        )
+
+    except Exception as e:
+        logger.error(session.sinfo + f"[ask_skill] error: {e}", exc_info=True)
+        session._stage_costs = {}                                   # ← 新增：异常时也清空，避免污染下一轮
+        return ChatAnswer.of_system_error(e)
+
+async def ask_skill2(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
+    import ai_config as AiConfig
     logger.debug(session.sinfo + " text %s",text)
     if AiConfig.getStringConfig("skill_tools.enabled", "true").lower() != "true":
         return None
@@ -301,8 +558,12 @@ async def ask_skill(session: "ChatSession", text: str) -> Optional[ChatAnswer]:
 
             tool_calls = getattr(response, "tool_calls", None)
 
-            logger.debug(session.sinfo + f"[ask_skill] normal routing elapsed={int((time.time()-t0)*1000)}ms "
-                         f"tool_calls={'yes' if tool_calls else 'no'}")
+
+            elapsed=int((time.time()-t0)*1000)
+            if not hasattr(session, "_stage_costs"):
+                session._stage_costs = {}
+            session._stage_costs["tools"] = elapsed   # elapsed 变量应该已经在原代码里算出来了
+            logger.debug(session.sinfo + f"[ask_skill] normal routing elapsed={elapsed}ms tool_calls=no")
 
             if not tool_calls:
                 logger.debug(session.sinfo+f" return None , not tool_call")

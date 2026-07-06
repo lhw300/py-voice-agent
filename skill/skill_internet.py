@@ -119,7 +119,7 @@ def _error(msg: str) -> dict:
 # ══════════════════════════════════════════════════════════════
 async def _query_address_by_phone(phone: str) -> Optional[str]:
     """Look up registered address by caller phone. Returns None if not found."""
-    mock = {"13800000000": "广东省广州市天河区天河路100号"}
+    mock = {"13800009999": "广东省广州市天河区天河路100号"}
     return mock.get(phone)
 
 async def _query_address_by_account(account: str) -> Optional[str]:
