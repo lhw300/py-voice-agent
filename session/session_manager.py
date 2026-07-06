@@ -61,7 +61,27 @@ class LlmClient:
         logger.debug(f"LlmClient created: model={model} httpx_client_id={id(client._client)}")
 
     # Java: public String generate(String systemPrompt, String userPrompt)
-    def generate(self, system_prompt: str, user_prompt: str) -> str:
+    def generate(self, system_prompt: str, user_prompt: str, json_mode: bool = True) -> str:
+        logger.debug("generate send to AI url=" + str(self._client.base_url) + " model=" + self._model)
+        #logger.debug("system_prompt=" + system_prompt[:80])
+        AiConfig.log(logger, "log.prompt.preview.chars", "system_prompt", system_prompt)
+        #logger.debug("user_prompt=" + user_prompt)
+        kwargs = dict(
+            model=self._model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_prompt},
+            ],
+            temperature=0.0,
+            top_p=1.0,  # ✅ 新增：配合 temp=0 彻底关闭采样扰动
+            max_tokens=256,
+        )
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        resp = self._client.chat.completions.create(**kwargs)
+        return resp.choices[0].message.content.strip()
+
+    def generate2(self, system_prompt: str, user_prompt: str) -> str:
         logger.debug("generate send to AI url=" + str(self._client.base_url) + " model=" + self._model)
         #logger.debug("system_prompt=" + system_prompt[:80])
         AiConfig.log(logger, "log.prompt.preview.chars", "system_prompt", system_prompt)
@@ -137,6 +157,35 @@ class LlmClient:
         except Exception as e:
             logger.error(f"chat_with_tools failed: {str(e)}")
             raise e
+
+    def rerank(self, query: str, document: str, system_prompt: str = None) -> float:
+        """
+        LLM-based relevance scoring, returns [0.0, 1.0], 1.0 = most relevant.
+        Mirrors Java LlmClient.rerank() default method.
+        """
+        if system_prompt is None:
+            system_prompt = (
+                "你是一个精确的文档评测专家。请判断提供的【内容】是否包含回答【问题】所需的关键信息。"
+                "相关请打 0.8-1.0 分，完全不相关打 0.0-0.2 分。只输出数字。"
+            )
+        user_prompt = "【用户问题】：" + query + "\n【参考文档】：" + document
+
+        try:
+            score_raw = self.generate(system_prompt, user_prompt, json_mode=False).strip()
+        except Exception as e:
+            logger.error(f"rerank generate failed: {str(e)}")
+            return 0.0
+
+        matches = re.findall(r"(?<!\d)(0\.\d+|1(?:\.0+)?|0)(?!\d)", score_raw)
+        if matches:
+            return min(float(matches[-1]), 1.0)
+
+        logger.debug(f"⚠️ Rerank 无法从大模型回复中提取合法分数，原回复: {score_raw}")
+        return 0.0
+
+    def rerank_batch(self, query: str, documents: list) -> list:
+        return [self.rerank(query, doc) for doc in documents]
+
 
 
 
@@ -383,7 +432,9 @@ def _init_with_type(type_: str, config_dir: str) -> None:
 
         # Java: String base = configPath.replace("\\", "/");
         base = config_dir.replace("\\", "/")
-
+        # 本地模型文件（rerank/embed）可以跟 ai.conf 所在目录分开存放
+        # 设置 LLM_CONFIG_DIR 单独指定模型目录，不设置则沿用 base（向后兼容）
+        MODEL_BASE_DIR = os.environ.get("LLM_CONFIG_DIR", base).replace("\\", "/").rstrip("/")
         # Java: String promptRewritePath = base + AiConfig.getStringConfig(...)
         promptRewritePath  = base + AiConfig.getStringConfig("path.prompt.rewrite",  "/config/prompt_rewritequery_v1_publish.txt")
         promptAskPath      = base + AiConfig.getStringConfig("path.prompt.ask",      "/config/prompt_finalask_v1_publish.txt")
@@ -460,6 +511,7 @@ def _init_with_type(type_: str, config_dir: str) -> None:
 
             # rerank: LLM-based (turboClient), no local CrossEncoder
             ACTIVE_ROUTER = ModelRouter(turboClient, turboClient, plusClient)
+            #(self, rewriter_client, rerank_client, final_llm_client):
 
             from search.embedding_client import CloudEmbeddingClient
             ACTIVE_EMBED = CloudEmbeddingClient(_client, model="text-embedding-v3", dimensions=1024)
@@ -481,14 +533,14 @@ def _init_with_type(type_: str, config_dir: str) -> None:
 
             # Java: DJLLocalClient reranker = new DJLLocalClient();
             rerank_name = AiConfig.getStringConfig("djl.model.rerank.name", "bge-reranker-v2-m3")
-            rerank_path = base.rstrip("/") + "/" + rerank_name
+            rerank_path = MODEL_BASE_DIR + "/" + rerank_name
             reranker    = RerankClient(rerank_path)
 
             ACTIVE_ROUTER = ModelRouter(turboClient, reranker, plusClient)
 
             # Java: ACTIVE_EMBED = new DJLLocalClient(); (local sentence-transformers)
-            embed_name  = AiConfig.getStringConfig("djl.model.embed.name", "text2vec-base-chinese-paraphrase-pt")
-            embed_path  = base.rstrip("/") + "/" + embed_name
+            embed_name  = AiConfig.getStringConfig("djl.model.embed.name", "bge-large-en-v1.5")
+            embed_path  = MODEL_BASE_DIR + "/" + embed_name
             ACTIVE_EMBED = EmbeddingClient(embed_path)
             ACTIVE_TABLE = AiConfig.getStringConfig(
                 "db.postgres.table.online",
@@ -512,14 +564,14 @@ def _init_with_type(type_: str, config_dir: str) -> None:
 
             # local rerank — same as hybrid
             rerank_name = AiConfig.getStringConfig("djl.model.rerank.name", "bge-reranker-v2-m3")
-            rerank_path = base.rstrip("/") + "/" + rerank_name
+            rerank_path = MODEL_BASE_DIR + "/" + rerank_name
             reranker    = RerankClient(rerank_path)
 
             ACTIVE_ROUTER = ModelRouter(miniClient, reranker, gpt4oClient)
 
             # local embed — same as hybrid
-            embed_name   = AiConfig.getStringConfig("djl.model.embed.name", "bge-large-zh-v1.5")
-            embed_path   = base.rstrip("/") + "/" + embed_name
+            embed_name   = AiConfig.getStringConfig("djl.model.embed.name", "text2vec-base-chinese-paraphrase-pt")
+            embed_path   = MODEL_BASE_DIR + "/" + embed_name
             ACTIVE_EMBED = EmbeddingClient(embed_path)
             ACTIVE_TABLE = AiConfig.getStringConfig(
                 "db.postgres.table.online",
@@ -544,6 +596,39 @@ def _init_with_type(type_: str, config_dir: str) -> None:
             ACTIVE_EMBED = CloudEmbeddingClient(_client, model="text-embedding-3-small", dimensions=1024)
             ACTIVE_TABLE  = AiConfig.getStringConfig("db.postgres.table.online", "enterprise_knowledge_openai_1024")
 
+
+        elif type_.lower() == "local":
+            # Fully local — Ollama (OpenAI-compatible) LLM + local rerank/embed, no cloud dependency
+            # rewriter: ollama chat model  finalLlm: ollama chat model (can differ)  rerank: local CrossEncoder  embed: local ST
+            OLLAMA_BASE_URL = AiConfig.getStringConfig(
+                "api.base.ollama", os.environ.get("OLLAMA_BASE_URL") or "http://127.0.0.1:11434/v1"
+            )
+            ollama_chat_model  = AiConfig.getStringConfig("ollama.model.chat", "qwen2.5:7b")
+            ollama_final_model = AiConfig.getStringConfig("ollama.model.final", ollama_chat_model)
+
+            # Ollama ignores the key, but the OpenAI SDK requires a non-empty string
+            _client     = OpenAI(api_key="ollama", base_url=OLLAMA_BASE_URL)
+            localClient = LlmClient(_client, model=ollama_chat_model)
+            finalClient = LlmClient(_client, model=ollama_final_model)
+
+            # local rerank — same as hybrid-qwen/hybrid-openai
+            rerank_name = AiConfig.getStringConfig("djl.model.rerank.name", "bge-reranker-v2-m3")
+            rerank_path = MODEL_BASE_DIR + "/" + rerank_name
+            reranker    = RerankClient(rerank_path)
+
+            ACTIVE_ROUTER = ModelRouter(localClient, reranker, finalClient)
+
+            # local embed — same as hybrid-qwen/hybrid-openai
+            embed_name   = AiConfig.getStringConfig("djl.model.embed.name", "text2vec-base-chinese-paraphrase-pt")
+            embed_path   = MODEL_BASE_DIR + "/" + embed_name
+            ACTIVE_EMBED = EmbeddingClient(embed_path)
+            ACTIVE_TABLE = AiConfig.getStringConfig(
+                "db.postgres.table.online",
+                "enterprise_knowledge_" + ("768" if ACTIVE_EMBED.getDimension() == 768 else "1024")
+            )
+            logger.debug("✅ [System Init] type=local — Ollama @ " + OLLAMA_BASE_URL + " model=" + ollama_chat_model)
+
+
         elif type_.lower() == "simple":
             # No LLM — all input treated as QUERY, used for slot-filling / debug
             ACTIVE_ROUTER = None
@@ -552,7 +637,7 @@ def _init_with_type(type_: str, config_dir: str) -> None:
             logger.debug("✅ [System Init] type=simple — LLM skipped")
 
         else:
-            raise ValueError("unsupported models: " + type_ + "  support: qwen / hybrid / openai / simple")
+            raise ValueError("unsupported models: " + type_ + "  support: qwen / hybrid-qwen / hybrid-openai / openai / local / simple")
         search_init()
         logger.debug("✅ [System Init] global resource type=" + type_)
 
