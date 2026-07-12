@@ -26,7 +26,7 @@ _COMMAND_RULES = [
 
     # ACTION_TRANSFER
     (re.compile(
-        r"^(转人工|找真人|转客服|帮我转|要投诉"
+        r"^(转人工|找真人|转客服|帮我转|"
         r"|transfer|speak to (a |an )?(agent|person|human|representative|staff|operator)"
         r"|get me (a |an )?(agent|person|human)|connect me|talk to (a |an )?human)[,，。！!]*$",
         re.IGNORECASE),
@@ -76,12 +76,15 @@ _ACK_PLAIN = re.compile(
     r"|ok|okay|all right|fine|i see|noted)[,，。！!]*$",
     re.IGNORECASE)
 
+# _ACK_RULES = [
+#     (_ACK_AFFIRM, lambda t: IntentResult(intent=Intent.ACK, sub_intent="affirm", refined_query=t)),
+#     (_ACK_NEGATE, lambda t: IntentResult(intent=Intent.ACK, sub_intent="negate", refined_query=t)),
+#     (_ACK_PLAIN,  lambda t: IntentResult(intent=Intent.ACK, sub_intent="ack",    refined_query=t)),
+# ]
 _ACK_RULES = [
-    (_ACK_AFFIRM, lambda t: IntentResult(intent=Intent.ACK, sub_intent="affirm", refined_query=t)),
-    (_ACK_NEGATE, lambda t: IntentResult(intent=Intent.ACK, sub_intent="negate", refined_query=t)),
-    (_ACK_PLAIN,  lambda t: IntentResult(intent=Intent.ACK, sub_intent="ack",    refined_query=t)),
+    (_ACK_AFFIRM, lambda t: IntentResult(intent=Intent.CHITCHAT, refined_query=t)),
+    (_ACK_NEGATE, lambda t: IntentResult(intent=Intent.CHITCHAT, refined_query=t)),
 ]
-
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------

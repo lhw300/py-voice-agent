@@ -12,7 +12,14 @@ from models import ChatAnswer
 from intent.intent_result import Intent, IntentResult
 from session.chat_history import ChatHistory
 from search.cache_service import convert, k1_get, k1_put, k2_get, k2_put
-from skill.chat_skill import ask_skill as _ask_skill
+# skill_tools.merged_classify.enabled=true  → chat_skill_classify.py（tools+classify合并一次调用）
+# skill_tools.merged_classify.enabled=false → chat_skill.py（原始版，tools/classify分开两次调用）
+if AiConfig.getStringConfig("skill_tools.mode", "layer").lower() == "layer":
+    from skill.chat_skill_layer import ask_skill as _ask_skill
+elif AiConfig.getStringConfig("skill_tools.mode", "layer").lower() == "legacy":
+    from skill.chat_skill import ask_skill as _ask_skill
+else:
+    from skill.chat_skill_classify import ask_skill as _ask_skill
 logger = logging.getLogger(__name__)
 
 # Java: private static final int MAX_HISTORY        = 60;
@@ -145,8 +152,8 @@ class ChatSession:
     def clearPendingQuery(self) -> None:            self.pendingQuery    = None
     def getRouter(self):                            return self.router
 
-    def setCRID(self, crid: str) -> None:
-        logger.debug(self.sinfo + " crid=" + crid+" -----------------------------------------")
+    def setCRID(self, crid: str,turn: str) -> None:
+        logger.debug(self.sinfo + " crid=" + crid+" turn="+turn+" ----------------------------------------")
         self.crid = crid
 
     # -------------------------------------------------------------------------
@@ -331,17 +338,29 @@ class ChatSession:
 
     def ask(self, text: str) -> ChatAnswer:
         if not text or not text.strip():
-            return ChatAnswer(code=-1, answer="输入为空")
-        if not hasattr(self, "_stage_costs"):        # ← 补上这两行
+            return ChatAnswer(code=-1, answer=AiConfig.cnen("输入为空", "Input is null"))
+
+        if not hasattr(self, "_stage_costs"):
             self._stage_costs = {}
+
         t0 = time.time()
-        intentResult: IntentResult = self.intentClassifier.classify(text, self.history)
-        t1 = time.time()
-        self._stage_costs["classify"] = int((t1 - t0) * 1000)
-        logger.debug(self.sinfo + " [1] intent classification elapsed: " + str(int((t1 - t0) * 1000)) + " ms  intent=" + str(intentResult.intent))
+        pending = getattr(self, "_pending_intent_result", None)
+        if pending is not None:
+            intentResult = pending
+            self._pending_intent_result = None
+            t1 = time.time()
+            self._stage_costs["classify"] = 0
+            logger.debug(self.sinfo + " [1] intent classification 复用 merged-classify 结果，跳过独立调用 intent=" + str(intentResult.intent))
+        else:
+            intentResult: IntentResult = self.intentClassifier.classify(text, self.history)
+            t1 = time.time()
+            self._stage_costs["classify"] = int((t1 - t0) * 1000)
+            logger.debug(self.sinfo + " [1] intent classification elapsed: " + str(int((t1 - t0) * 1000)) + " ms  intent=" + str(intentResult.intent))
+
 
         if intentResult.intent == Intent.QUERY and intentResult.category is None:
             self.pendingQuery = text
+            self.currentCategory = None # 新增：追问身份时，清空可能陈旧的旧身份
         elif intentResult.category is not None:
             self.currentCategory = intentResult.category
 
@@ -614,6 +633,7 @@ class ChatSession:
 
         norm   = convert(text)
         vector = self.embeddingClient.embed(norm)
+        logger.debug(self.sinfo + f"[K2] embed_client={self.embeddingClient.describe()}")   # 新增
 
         # K2 semantic cache lookup
         cached = k2_get(norm, vector)
@@ -708,6 +728,7 @@ class ChatSession:
         t_k2_start = time.time()          # ← 新增：K2阶段计时起点（含embed+比对）
         norm   = convert(text)
         vector = self.embeddingClient.embed(norm)
+        logger.debug(self.sinfo + f"[K2] embed_client={self.embeddingClient.describe()}")   # 新增
 
         # K2 semantic cache lookup
         cached = k2_get(norm, vector)
@@ -1147,7 +1168,7 @@ class ChatSession:
         logger.debug(self.sinfo + "finalAsk context length: " + str(jlen) + " chars, est token="+str(jlen/4))
 
         try:
-            llm_name = "turbo(downgrade)" if len(fullContext) < 800 else "plus"
+            llm_name = "rewriter(downgrade)" if len(fullContext) < 800 else " finalLlm "
             logger.debug(self.sinfo + " finalAsk using: " + llm_name)
             llm = self.router.rewriter() if len(fullContext) < 800 else self.router.finalLlm()
             answer = llm.chat(self.history.toJsonArrayWithWindow()) if self.router else None

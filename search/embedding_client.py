@@ -27,10 +27,12 @@ class EmbeddingClient:
         from sentence_transformers import SentenceTransformer
         logger.debug("⏳ loading Embedding model: " + model_path)
         self._model = SentenceTransformer(model_path)
+        self._model_path = model_path                                          # 补上这行
+        self._model_name = os.path.basename(model_path.rstrip("/\\"))          # 补上这行
         self._dimension = len(self._model.encode("test"))
-        logger.debug("✅ Embedding model loaded，dimension: " + str(self._dimension))
+        logger.debug("✅ Embedding model loaded, dimension=" + str(self._dimension) + " device=" + str(next(self._model.parameters()).device))
 
-    """
+        """
     public double[] embed(String text) throws Exception {
         try (var predictor = model.newPredictor()) {
             float[] fVec = predictor.predict(text);
@@ -56,7 +58,8 @@ class EmbeddingClient:
     """
     def modeType(self) -> str:
         return "local"
-
+    def describe(self) -> str:                            # ← 新增：统一描述接口
+        return f"local:{self._model_name} (dim={self._dimension})"
 class CloudEmbeddingClient:
     """
     Cloud embedding via Aliyun text-embedding-v3 (1024-dim)
@@ -81,3 +84,5 @@ class CloudEmbeddingClient:
 
     def modeType(self) -> str:
         return "cloud"
+    def describe(self) -> str:                             # ← 新增
+        return f"cloud:{self._model} (dim={self._dim})"

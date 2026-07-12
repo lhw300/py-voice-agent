@@ -50,33 +50,7 @@ def init(filePath: str) -> None:
     reload()
 
 
-# ---------------------------------------------------------------------------
-# Java: public static synchronized void reload() {
-# Java:     if (configFile == null) {
-# Java:         throw new RuntimeException("AiConfig not initialized");
-# Java:     }
-# Java:     try {
-# Java:         Map<String, String> newMap = new ConcurrentHashMap<>();
-# Java:         BufferedReader reader = new BufferedReader(new FileReader(configFile));
-# Java:         String line;
-# Java:         while ((line = reader.readLine()) != null) {
-# Java:             line = line.trim();
-# Java:             if (line.isEmpty()) continue;
-# Java:             if (line.startsWith("#")) continue;
-# Java:             int idx = line.indexOf('=');
-# Java:             if (idx < 0) continue;
-# Java:             String key   = line.substring(0, idx).trim();
-# Java:             String value = line.substring(idx + 1).trim();
-# Java:             newMap.put(key, value);
-# Java:         }
-# Java:         reader.close();
-# Java:         configMap.clear();
-# Java:         configMap.putAll(newMap);
-# Java:         logger.debug("AiConfig loaded: " + configMap.size());
-# Java:     } catch (Exception e) {
-# Java:         throw new RuntimeException("Load config error: " + e.getMessage(), e);
-# Java:     }
-# Java: }
+
 # ---------------------------------------------------------------------------
 def reload() -> None:
     global configMap
@@ -283,3 +257,11 @@ def save(updates: Dict[str, str]) -> None:
     with open(configFile, "w", encoding="utf-8") as f:
         f.write("\n".join(out))
     reload()
+# 获取当前语言设置，默认使用 'cn'
+def get_lang() -> str:
+    # 假设 ai.conf 中有一行配置: app.lang=en
+    return getStringConfig("app.lang", "cn")
+
+def cnen(cn: str, en: str) -> str:
+    """根据当前配置返回对应语言的字符串"""
+    return en if get_lang() == "en" else cn

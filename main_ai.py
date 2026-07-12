@@ -53,7 +53,7 @@ async def ai_send(req: ChatRequest) -> ChatAnswer:
         logger.error(f"upsert_call error: {e}", exc_info=True)
 
     session = session_manager.get_session(req.sn)
-    session.setCRID(req.crid)
+    session.setCRID(req.crid,req.turn)
     session._caller_phone = req.phone or "9"
 
     t_ask_start = time.time()

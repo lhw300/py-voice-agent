@@ -440,7 +440,7 @@ def _k2_raw_to_answer(raw: dict) -> dict:
         }
     }
 
-def warmup(config_dir: str) -> None:
+def warmup(config_dir: str, embed_client) -> None:
     import session.session_manager as sm
 
     faq_path = os.path.join(config_dir,
@@ -449,7 +449,8 @@ def warmup(config_dir: str) -> None:
     if not os.path.exists(faq_path):
         logger.warning(f"[cache] warmup faq file not found: {faq_path}")
         return
-
+    embed_desc = embed_client.describe() if hasattr(embed_client, "describe") else embed_client.modeType()
+    logger.info(f"[cache] warmup embed_client={embed_desc}")
     try:
         _get_redis().flushdb()
         logger.debug("[cache] Redis flushed before warmup")
@@ -500,13 +501,15 @@ def warmup(config_dir: str) -> None:
             success += 1
 
             try:
-                vector = sm.ACTIVE_EMBED.embed(norm)
+                vector = embed_client.embed(norm)
                 k2_put(norm, vector, answer_dict, permanent=True)
                 k2_count += 1
             except Exception as e:
                 logger.warning(f"[cache] warmup k2 embed failed: {q[:40]} — {e}")
 
     logger.debug(f"[cache] warmup complete: {success} K1 written, {k2_count} K2 written")
+
+
 def _vector_to_bytes(vector: list[float]) -> bytes:
     """Encode float list as raw bytes (4 bytes per float, little-endian)."""
     import struct

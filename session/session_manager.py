@@ -13,6 +13,7 @@ import threading                      # Java: ScheduledExecutorService / Runnabl
 import time                           # Java: System.currentTimeMillis()
 from typing import Dict, Optional
 import json
+import httpx
 # Java: import com.lcallai.handler.*;
 # Java: import com.lcallai.intent.*;
 from openai import OpenAI              # Java: OkHttpClient — shared HTTP connection pool
@@ -45,6 +46,73 @@ from search import cache_service
 def _format_messages(messages: list) -> str:
     formatted = json.dumps(messages, ensure_ascii=False, indent=2)
     return formatted.replace("\\n", "\n")
+# 原来的 LlmClient 保持不变，专门服务 qwen / openai / hybrid-qwen / hybrid-openai 这几个云端分支
+
+
+# 新增一个专门给本地Ollama用的实现
+class OllamaNativeClient:
+    """
+    专门给 local (Ollama) 模式用，直连原生 /api/chat，
+    绕开 /v1/ OpenAI兼容层不支持 think 参数的bug。
+    """
+    def __init__(self, base_url: str, model: str):
+        self._base_url = base_url.rstrip("/")
+        self._model = model
+        self._http = httpx.Client(timeout=60.0)
+
+    def generate(self, system_prompt: str, user_prompt: str, json_mode: bool = True) -> str:
+        payload = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_prompt},
+            ],
+            "think": False,
+            "stream": False,
+            "keep_alive": "30m",
+            "options": {"temperature": 0.0, "top_p": 1.0, "num_predict": 256},
+        }
+        if json_mode:
+            payload["format"] = "json"
+        resp = self._http.post(f"{self._base_url}/api/chat", json=payload)
+        resp.raise_for_status()
+        return resp.json()["message"]["content"].strip()
+
+    def chat(self, messages: list) -> str:
+        payload = {
+            "model": self._model,
+            "messages": messages,
+            "think": False,
+            "stream": False,
+            "keep_alive": "30m",
+            "options": {"temperature": 0.1, "top_p": 0.9, "num_predict": 1024},
+        }
+        resp = self._http.post(f"{self._base_url}/api/chat", json=payload)
+        resp.raise_for_status()
+        return resp.json()["message"]["content"].strip()
+
+    def chat_with_tools(self, messages: list, tools: list = None, tool_choice: str = "auto"):
+        payload = {
+            "model": self._model,
+            "messages": messages,
+            "think": False,
+            "stream": False,
+            "keep_alive": "30m",
+            "options": {"temperature": 0.1, "top_p": 0.9, "num_predict": 1024},
+        }
+        logger.debug(f"chat_with_tools start: model={self._model}")
+        AiConfig.log(logger, "log.messages.chars", "input_messages", _format_messages(messages))
+
+        if tools:
+            payload["tools"] = tools
+            logger.debug("input_tools: " + json.dumps(tools, ensure_ascii=False, indent=2))
+
+        resp = self._http.post(f"{self._base_url}/api/chat", json=payload)
+        resp.raise_for_status()
+        msg = resp.json()["message"]
+        if msg.get("tool_calls"):
+            return msg
+        return (msg.get("content") or "").strip()
 
 class LlmClient:
     """
@@ -60,7 +128,7 @@ class LlmClient:
         self._model  = model    # Java: private final String model — fixed at construction
         logger.debug(f"LlmClient created: model={model} httpx_client_id={id(client._client)}")
 
-    # Java: public String generate(String systemPrompt, String userPrompt)
+    # intent classifier
     def generate(self, system_prompt: str, user_prompt: str, json_mode: bool = True) -> str:
         logger.debug("generate send to AI url=" + str(self._client.base_url) + " model=" + self._model)
         #logger.debug("system_prompt=" + system_prompt[:80])
@@ -75,30 +143,16 @@ class LlmClient:
             temperature=0.0,
             top_p=1.0,  # ✅ 新增：配合 temp=0 彻底关闭采样扰动
             max_tokens=256,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         )
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
         resp = self._client.chat.completions.create(**kwargs)
+        logger.debug(f"extra_body={kwargs.get('extra_body')}")
         return resp.choices[0].message.content.strip()
 
-    def generate2(self, system_prompt: str, user_prompt: str) -> str:
-        logger.debug("generate send to AI url=" + str(self._client.base_url) + " model=" + self._model)
-        #logger.debug("system_prompt=" + system_prompt[:80])
-        AiConfig.log(logger, "log.prompt.preview.chars", "system_prompt", system_prompt)
-        #logger.debug("user_prompt=" + user_prompt)
-        resp = self._client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_prompt},
-            ],
-            temperature=0.0,
-            top_p=1.0,  # ✅ 新增：配合 temp=0 彻底关闭采样扰动
-            max_tokens=256,
-            response_format={"type": "json_object"},
-        )
-        return resp.choices[0].message.content.strip()
 
+    #finalAsk / RAG
     def chat(self, messages: list) -> str:
         logger.debug("chat send to AI url=" + str(self._client.base_url) + " model=" + self._model)
         AiConfig.log(logger, "log.messages.chars", "messages", str(messages))
@@ -108,15 +162,17 @@ class LlmClient:
             temperature=0.1,     # ✅ 从 0.7 降到 0.1，平衡自然度+稳定性
             top_p=0.9,           # ✅ 新增：关闭极端采样
             max_tokens=1024,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
 
         )
+
         return resp.choices[0].message.content.strip()
     # session/session_manager.py 顶部加一个本地函数，不依赖外部文件
 
 
     import time
     import logging
-
+    #工具路由分支
     def chat_with_tools(self, messages: list, tools: list = None, tool_choice: str = "auto"):
         # 1. 记录开始时间
         start_time = time.time()
@@ -131,6 +187,7 @@ class LlmClient:
             temperature = 0.1,
             top_p       = 0.9,
             max_tokens  = 1024,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         )
         if tools:
             kwargs["tools"]       = tools
@@ -147,8 +204,7 @@ class LlmClient:
 
             # 4. 计算并打印耗时
             duration = (time.time() - start_time) * 1000  # 毫秒
-            logger.info(f"chat_with_tools finished in {duration:.2f}ms")
-
+            logger.info(f"chat_with_tools finished in {duration:.2f}ms extra_body={kwargs.get('extra_body')}")
             # 返回处理逻辑
             if getattr(msg, "tool_calls", None):
                 return msg
@@ -506,17 +562,23 @@ def _init_with_type(type_: str, config_dir: str) -> None:
             logger.debug("DEBUG:   QWEN_API_KEY len = " + str(len(GLOBAL_QWEN_KEY)))
 
             _client     = OpenAI(api_key=GLOBAL_QWEN_KEY, base_url=ALIYUN_BASE_URL)
-            turboClient = LlmClient(_client, model="qwen-plus")
+            turboClient = LlmClient(_client, model="qwen-turbo")
             plusClient  = LlmClient(_client, model="qwen-plus")
 
-            # rerank: LLM-based (turboClient), no local CrossEncoder
-            ACTIVE_ROUTER = ModelRouter(turboClient, turboClient, plusClient)
-            #(self, rewriter_client, rerank_client, final_llm_client):
-
             from search.embedding_client import CloudEmbeddingClient
-            ACTIVE_EMBED = CloudEmbeddingClient(_client, model="text-embedding-v3", dimensions=1024)
-            ACTIVE_TABLE  = AiConfig.getStringConfig("db.postgres.table.online", "enterprise_knowledge_qwen_1024")
+            ACTIVE_EMBED = CloudEmbeddingClient(_client, model="text-embedding-v3", dimensions=1024)   # ← 提前到这里
+            ACTIVE_TABLE = AiConfig.getStringConfig("db.postgres.table.online", "enterprise_knowledge_qwen_1024")
 
+            # rerank: LLM-based，没有单独的reranker实例，沿用turboClient
+            #def __init__(self, rewriter_client, rerank_client,
+            #final_llm_client, skill_router_client=None):
+
+
+            ACTIVE_ROUTER = ModelRouter(
+                turboClient, turboClient, plusClient,
+                skill_router_client=turboClient,
+                embed_client=ACTIVE_EMBED,                                                              # ← 新增
+            )
         elif type_.lower() == "hybrid-qwen":
             # Cloud LLM + local rerank/embed (recommended for production)
             # rewriter: qwen-turbo  finalLlm: qwen-plus  rerank: local CrossEncoder  embed: local ST
@@ -536,9 +598,8 @@ def _init_with_type(type_: str, config_dir: str) -> None:
             rerank_path = MODEL_BASE_DIR + "/" + rerank_name
             reranker    = RerankClient(rerank_path)
 
-            ACTIVE_ROUTER = ModelRouter(turboClient, reranker, plusClient)
 
-            # Java: ACTIVE_EMBED = new DJLLocalClient(); (local sentence-transformers)
+# Java: ACTIVE_EMBED = new DJLLocalClient(); (local sentence-transformers)
             embed_name  = AiConfig.getStringConfig("djl.model.embed.name", "bge-large-en-v1.5")
             embed_path  = MODEL_BASE_DIR + "/" + embed_name
             ACTIVE_EMBED = EmbeddingClient(embed_path)
@@ -546,7 +607,11 @@ def _init_with_type(type_: str, config_dir: str) -> None:
                 "db.postgres.table.online",
                 "enterprise_knowledge_" + ("768" if ACTIVE_EMBED.getDimension() == 768 else "qwen_1024")
             )
-
+            ACTIVE_ROUTER = ModelRouter(
+                turboClient, reranker, plusClient,
+                skill_router_client=turboClient,
+                embed_client=ACTIVE_EMBED,                                                          # ← 新增
+            )
         elif type_.lower() == "hybrid-openai":
             # Cloud LLM (OpenAI) + local rerank/embed
             # intent/rewriter: gpt-4o-mini   finalLlm: gpt-4o
@@ -567,15 +632,18 @@ def _init_with_type(type_: str, config_dir: str) -> None:
             rerank_path = MODEL_BASE_DIR + "/" + rerank_name
             reranker    = RerankClient(rerank_path)
 
-            ACTIVE_ROUTER = ModelRouter(miniClient, reranker, gpt4oClient)
-
-            # local embed — same as hybrid
             embed_name   = AiConfig.getStringConfig("djl.model.embed.name", "text2vec-base-chinese-paraphrase-pt")
             embed_path   = MODEL_BASE_DIR + "/" + embed_name
-            ACTIVE_EMBED = EmbeddingClient(embed_path)
+            ACTIVE_EMBED = EmbeddingClient(embed_path)                                             # ← 提前到这里
             ACTIVE_TABLE = AiConfig.getStringConfig(
                 "db.postgres.table.online",
                 "enterprise_knowledge_" + ("768" if ACTIVE_EMBED.getDimension() == 768 else "1024")
+            )
+
+            ACTIVE_ROUTER = ModelRouter(
+                miniClient, reranker, gpt4oClient,
+                skill_router_client=miniClient,
+                embed_client=ACTIVE_EMBED,                                                          # ← 新增
             )
         elif type_.lower() == "openai":
             # Full cloud — OpenAI
@@ -590,44 +658,103 @@ def _init_with_type(type_: str, config_dir: str) -> None:
             miniClient = LlmClient(_client, model="gpt-4o-mini")
             gpt4oClient= LlmClient(_client, model="gpt-4o")
 
-            # rerank: LLM-based (miniClient), no local CrossEncoder
-            ACTIVE_ROUTER = ModelRouter(miniClient, miniClient, gpt4oClient)
             from search.embedding_client import CloudEmbeddingClient
-            ACTIVE_EMBED = CloudEmbeddingClient(_client, model="text-embedding-3-small", dimensions=1024)
-            ACTIVE_TABLE  = AiConfig.getStringConfig("db.postgres.table.online", "enterprise_knowledge_openai_1024")
+            ACTIVE_EMBED = CloudEmbeddingClient(_client, model="text-embedding-3-small", dimensions=1024)  # ← 提前
+            ACTIVE_TABLE = AiConfig.getStringConfig("db.postgres.table.online", "enterprise_knowledge_openai_1024")
 
+            ACTIVE_ROUTER = ModelRouter(
+                miniClient, miniClient, gpt4oClient,
+                skill_router_client=miniClient,
+                embed_client=ACTIVE_EMBED,                                                          # ← 新增
+            )
 
-        elif type_.lower() == "local":
+        elif type_.lower() == "localollama":
             # Fully local — Ollama (OpenAI-compatible) LLM + local rerank/embed, no cloud dependency
             # rewriter: ollama chat model  finalLlm: ollama chat model (can differ)  rerank: local CrossEncoder  embed: local ST
+            # OLLAMA_BASE_URL = AiConfig.getStringConfig(
+            #     "api.base.ollama", os.environ.get("OLLAMA_BASE_URL") or "http://127.0.0.1:11434/v1"
+            # )
+            # ollama_chat_model  = AiConfig.getStringConfig("ollama.model.chat", "qwen2.5:7b")
+            # ollama_final_model = AiConfig.getStringConfig("ollama.model.final", ollama_chat_model)
+            #
+            # # Ollama ignores the key, but the OpenAI SDK requires a non-empty string
+            # _client     = OpenAI(api_key="ollama", base_url=OLLAMA_BASE_URL)
+            # localClient = LlmClient(_client, model=ollama_chat_model)
+            # finalClient = LlmClient(_client, model=ollama_final_model)
+
             OLLAMA_BASE_URL = AiConfig.getStringConfig(
-                "api.base.ollama", os.environ.get("OLLAMA_BASE_URL") or "http://127.0.0.1:11434/v1"
+                "api.base.ollama", os.environ.get("OLLAMA_BASE_URL") or "http://127.0.0.1:11434"
             )
-            ollama_chat_model  = AiConfig.getStringConfig("ollama.model.chat", "qwen2.5:7b")
+            # 注意：这里不再拼 /v1 了，因为走原生API
+            OLLAMA_BASE_URL = OLLAMA_BASE_URL.replace("/v1", "").rstrip("/")
+
+            ollama_chat_model  = AiConfig.getStringConfig("ollama.model.chat", "qwen3.5:9b")
             ollama_final_model = AiConfig.getStringConfig("ollama.model.final", ollama_chat_model)
 
-            # Ollama ignores the key, but the OpenAI SDK requires a non-empty string
-            _client     = OpenAI(api_key="ollama", base_url=OLLAMA_BASE_URL)
-            localClient = LlmClient(_client, model=ollama_chat_model)
-            finalClient = LlmClient(_client, model=ollama_final_model)
+            localClient = OllamaNativeClient(OLLAMA_BASE_URL, model=ollama_chat_model)
+            finalClient = OllamaNativeClient(OLLAMA_BASE_URL, model=ollama_final_model)
+
+
+
+
 
             # local rerank — same as hybrid-qwen/hybrid-openai
             rerank_name = AiConfig.getStringConfig("djl.model.rerank.name", "bge-reranker-v2-m3")
             rerank_path = MODEL_BASE_DIR + "/" + rerank_name
             reranker    = RerankClient(rerank_path)
 
-            ACTIVE_ROUTER = ModelRouter(localClient, reranker, finalClient)
+            embed_name   = AiConfig.getStringConfig("djl.model.embed.name", "bge-large-zh-v1.5")
+            embed_path   = MODEL_BASE_DIR + "/" + embed_name
+            ACTIVE_EMBED = EmbeddingClient(embed_path)                                             # ← 提前到这里
+            ACTIVE_TABLE = AiConfig.getStringConfig(
+                "db.postgres.table.online",
+                "enterprise_knowledge_" + ("768" if ACTIVE_EMBED.getDimension() == 768 else "1024")
+            )
 
-            # local embed — same as hybrid-qwen/hybrid-openai
-            embed_name   = AiConfig.getStringConfig("djl.model.embed.name", "text2vec-base-chinese-paraphrase-pt")
+            ACTIVE_ROUTER = ModelRouter(
+                localClient, reranker, finalClient,
+                skill_router_client=localClient,
+                embed_client=ACTIVE_EMBED,                                                          # ← 新增
+            )
+            logger.debug("✅ [System Init] type=local — Ollama @ " + OLLAMA_BASE_URL + " model=" + ollama_chat_model)
+        elif type_.lower() == "localopenai":
+            # 本地 vLLM（OpenAI 兼容协议）——LlmClient 直接走标准 OpenAI SDK，
+            # tool_choice / tools 均由 vLLM 端 guided decoding 保证生效，
+            # 不需要像 OllamaNativeClient 那样手写 payload。
+            LOCAL_OPENAI_BASE_URL = AiConfig.getStringConfig(
+                "api.base.local_openai", os.environ.get("LOCAL_OPENAI_BASE_URL") or "http://127.0.0.1:8000/v1"
+            )
+            # vLLM 走标准 /v1 协议，需要保留 /v1（跟 localOllama 分支相反，不要 strip 掉）
+            if not LOCAL_OPENAI_BASE_URL.rstrip("/").endswith("/v1"):
+                LOCAL_OPENAI_BASE_URL = LOCAL_OPENAI_BASE_URL.rstrip("/") + "/v1"
+
+            vllm_chat_model  = AiConfig.getStringConfig("vllm.model.chat", "qwen3.5-9b")
+            vllm_final_model = AiConfig.getStringConfig("vllm.model.final", vllm_chat_model)
+
+            # vLLM 忽略 api_key 内容，但 OpenAI SDK 要求非空字符串
+            _client     = OpenAI(api_key="not-needed", base_url=LOCAL_OPENAI_BASE_URL)
+            localClient = LlmClient(_client, model=vllm_chat_model)
+            finalClient = LlmClient(_client, model=vllm_final_model)
+
+            # local rerank — 与 localOllama 分支一致，复用本地 CrossEncoder + embedding
+            rerank_name = AiConfig.getStringConfig("djl.model.rerank.name", "bge-reranker-v2-m3")
+            rerank_path = MODEL_BASE_DIR + "/" + rerank_name
+            reranker    = RerankClient(rerank_path)
+
+            embed_name   = AiConfig.getStringConfig("djl.model.embed.name", "bge-large-zh-v1.5")
             embed_path   = MODEL_BASE_DIR + "/" + embed_name
             ACTIVE_EMBED = EmbeddingClient(embed_path)
             ACTIVE_TABLE = AiConfig.getStringConfig(
                 "db.postgres.table.online",
                 "enterprise_knowledge_" + ("768" if ACTIVE_EMBED.getDimension() == 768 else "1024")
             )
-            logger.debug("✅ [System Init] type=local — Ollama @ " + OLLAMA_BASE_URL + " model=" + ollama_chat_model)
 
+            ACTIVE_ROUTER = ModelRouter(
+                localClient, reranker, finalClient,
+                skill_router_client=localClient,
+                embed_client=ACTIVE_EMBED,
+            )
+            logger.debug("✅ [System Init] type=local — vLLM(OpenAI-compatible) @ " + LOCAL_OPENAI_BASE_URL + " model=" + vllm_chat_model)
 
         elif type_.lower() == "simple":
             # No LLM — all input treated as QUERY, used for slot-filling / debug
@@ -665,10 +792,10 @@ def _init_with_type(type_: str, config_dir: str) -> None:
         # Java:         .register(IntentResult.Intent.CHITCHAT, new ChitchatHandler(globalChitchatPrompt));
         intentDispatcher = IntentDispatcher()
         intentDispatcher.register(Intent.QUERY,    QueryHandler())
-        intentDispatcher.register(Intent.FEEDBACK, FeedbackHandler())
+        #intentDispatcher.register(Intent.FEEDBACK, FeedbackHandler())
         intentDispatcher.register(Intent.COMMAND,  CommandHandler())
-        intentDispatcher.register(Intent.ACK,      AckHandler())
-        intentDispatcher.register(Intent.INFORM,   InformHandler())
+        #intentDispatcher.register(Intent.ACK,      AckHandler())
+        #intentDispatcher.register(Intent.INFORM,   InformHandler())
         intentDispatcher.register(Intent.GREETING, GreetingHandler())
         intentDispatcher.register(Intent.CHITCHAT, ChitchatHandler(globalChitchatPrompt))
         ACTIVE_INTENT_DISPATCHER = intentDispatcher
@@ -682,7 +809,7 @@ def _init_with_type(type_: str, config_dir: str) -> None:
         logger.debug("cache.warmup.on_start=" + str(AiConfig.getBooleanConfig("cache.warmup.on_start", False)))
         if AiConfig.getBooleanConfig("cache.warmup.on_start", False):
             from search.cache_service import warmup
-            warmup(config_dir)
+            warmup(config_dir, ACTIVE_ROUTER.embed())
 
     except Exception as e:
         logger.error("❌ [System Init] inited failed！")
@@ -951,82 +1078,14 @@ def _loadPromptFromFile(filePath: str, defaultValue: str) -> str:
         return defaultValue
 
 def warm_up() -> None:
-    """
-    Mirrors Java: public static void warmUp()
-    Warms up the full pipeline: rewriter + rerank + finalLlm + embed.
-    Call after init() and before the first real request.
-    """
     if not AiConfig.getStringConfig("system.warmup.enabled", "true").lower() == "true":
         logger.debug("skip warmup: system.warmup.enabled=false")
         return
-
     if ACTIVE_ROUTER is None:
         logger.debug("⚠️ warm_up skipped: ACTIVE_ROUTER not initialized.")
         return
+    ACTIVE_ROUTER.warmUp()
 
-    logger.debug("⏳ Starting full pipeline warm-up (rewriter + rerank + finalLlm + embed)...")
-    import time as _time
-    total_start = _time.time()
-
-    try:
-        t = _time.time()
-        ACTIVE_ROUTER.rewriter().generate("Output json.", "respond with json: {\"ok\":1}")
-        logger.debug("✅ rewriter warm-up done  t=" + str(int((_time.time() - t) * 1000)) + " ms")
-    except Exception as e:
-        logger.error("⚠️ rewriter warm-up failed: " + str(e))
-
-    try:
-        t = _time.time()
-        ACTIVE_ROUTER.rerank("Beijing", "Beijing is the capital of China.")
-        logger.debug("✅ rerank warm-up done    t=" + str(int((_time.time() - t) * 1000)) + " ms")
-    except Exception as e:
-        logger.error("⚠️ rerank warm-up failed: " + str(e))
-
-    try:
-        t = _time.time()
-        ACTIVE_ROUTER.finalLlm().generate("Output json.", "respond with json: {\"ok\":1}")
-        logger.debug("✅ finalLlm warm-up done  t=" + str(int((_time.time() - t) * 1000)) + " ms")
-    except Exception as e:
-        logger.error("⚠️ finalLlm warm-up failed: " + str(e))
-
-    if ACTIVE_EMBED is not None:
-        try:
-            t = _time.time()
-            ACTIVE_EMBED.embed("hello")
-            logger.debug("✅ embed warm-up done     t=" + str(int((_time.time() - t) * 1000)) + " ms")
-        except Exception as e:
-            logger.error("⚠️ embed warm-up failed: " + str(e))
-    else:
-        logger.debug("⏭️  embed warm-up skipped: ACTIVE_EMBED is None")
-
-    logger.debug("✅ full pipeline warm-up complete  total=" + str(int((_time.time() - total_start) * 1000)) + " ms")
-# ===========================================================================
-# Java: private static String loadKnowledgeBase(String filePath) {
-# Java:     try {
-# Java:         File file = new File(filePath);
-# Java:         if (!file.exists()) {
-# Java:             logger.error("❌ 知识库文件不存在: " + filePath);
-# Java:             return "";
-# Java:         }
-# Java:         // 1. 显式按字节读取，防止受 JVM 默认编码 (GBK) 干扰
-# Java:         byte[] bytes = Files.readAllBytes(Paths.get(filePath));
-# Java:         // 2. 转换为 UTF-8 字符串
-# Java:         String content = new String(bytes, StandardCharsets.UTF_8);
-# Java:         // 3. 处理 UTF-8 BOM (\uFEFF)
-# Java:         if (content.length() > 0 && content.charAt(0) == '\uFEFF') {
-# Java:             content = content.substring(1);
-# Java:         }
-# Java:         logger.debug("📚 知识库加载成功: " + filePath + " (长度: " + content.length() + " 字符)");
-# Java:         return content.trim();
-# Java:     } catch (IOException e) {
-# Java:         logger.error("💥 加载知识库时发生 I/O 异常: " + e.getMessage());
-# Java:         return "";
-# Java:     } catch (Exception e) {
-# Java:         logger.error("💥 加载知识库时发生未知错误: " + e.getMessage());
-# Java:         return "";
-# Java:     }
-# Java: }
-# ===========================================================================
 def _loadKnowledgeBase(filePath: str) -> str:
     # Java: File file = new File(filePath); if (!file.exists()) { ... return ""; }
     if not os.path.exists(filePath):

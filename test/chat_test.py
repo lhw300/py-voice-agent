@@ -5,7 +5,7 @@ from datetime import datetime
 
 BASE_URL = "http://127.0.0.1:7626"
 
-
+_turn_counter = 0
 COST_DIAGRAM = """
 === 耗时字段关系图 ===
 
@@ -53,16 +53,20 @@ retrieval + final_ask ≈ handler（K2未命中，走完整RAG）
 
 def chat(vo_id: str, text: str, sn: str, call_date: str, start_time: str) -> str:
     url = f"{BASE_URL}/{vo_id}"
+    global  _turn_counter
+    _turn_counter += 1
     payload = {
         "sn":         sn,
         "crid":       "c1",
         "ch":         "1",
         "call_date":  call_date,
         "start_time": start_time,
+        "turn":         str(_turn_counter),
         "phone":      "13800009999",
         "vo_id":      vo_id,
         "text":       text
     }
+
     t0 = time.time()
     resp = requests.post(url, json=payload)
     elapsed = int((time.time() - t0) * 1000)
@@ -87,6 +91,8 @@ def new_session():
     now = datetime.now()
     call_date = now.strftime("%Y-%m-%d")
     start_time = now.strftime("%H:%M:%S")
+    global  _turn_counter
+    _turn_counter = 0
     return sn, call_date, start_time
 
 
@@ -121,5 +127,10 @@ if __name__ == "__main__":
             print(COST_DIAGRAM)
             continue
 
-        answer, elapsed = chat(vo_id, user_input, sn, call_date, start_time)
-        print(f"AI: {answer}  [{elapsed}ms]\n")
+        # 支持用 / 分隔的批量测试：一次性输入多轮问题，自动依次执行
+        turns = [t.strip() for t in user_input.split("/") if t.strip()]
+        for i, text in enumerate(turns, 1):
+            if len(turns) >= 1:
+                print(f"\n--- 第{i}/{len(turns)}轮 (turn={_turn_counter + 1}): {text} ---")
+            answer, elapsed = chat(vo_id, text, sn, call_date, start_time)
+            print(f"AI: {answer}  [{elapsed}ms]\n")

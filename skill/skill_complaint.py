@@ -86,7 +86,7 @@ _TOOL_CANCEL = {
     "type": "function",
     "function": {
         "name": "cancel_skill",
-        "description": "用户明确表示放弃、取消当前流程时调用。",
+        "description": "用户明确表示放弃、取消当前投诉流程时调用，比如说 算了、不投诉了、不想投诉了、取消 等等。",
         "parameters": {
             "type": "object",
             "properties": {"reason": {"type": "string", "description": "用户放弃的原因，可选"}},

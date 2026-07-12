@@ -4,12 +4,16 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List, Dict
+import logging
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import ai_config as AiConfig
 from search.embedding_client import EmbeddingClient
 from search.search_service import getRelevantKnowledge
 from search.ingestion_service import _readFromTxt_from_str, _upsertToDatabase, _cleanContent
+from search import knowledge_service as ks
+
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
 # 由 main.py lifespan 注入
@@ -59,17 +63,7 @@ class SingleUpdate(BaseModel):
 
 @router.get("/stats")
 def get_stats():
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(f"""
-                SELECT
-                    COUNT(*)                                          AS total,
-                    COUNT(*) FILTER (WHERE embedding IS NOT NULL)    AS indexed,
-                    COUNT(*) FILTER (WHERE embedding IS NULL)        AS pending,
-                    COUNT(*) FILTER (WHERE is_active = false)        AS failed
-                FROM {_table}
-            """)
-            return cur.fetchone()
+    return ks.get_stats(_table)
 
 
 @router.get("/knowledge")
@@ -80,128 +74,43 @@ def list_knowledge(
         page:      int = 1,
         page_size: int = 20,
 ):
-    conditions = ["1=1"]
-    params     = []
-
-    if category:
-        conditions.append("category = %s"); params.append(category)
-    if status == "indexed":
-        conditions.append("embedding IS NOT NULL AND is_active = true")
-    elif status == "pending":
-        conditions.append("embedding IS NULL AND is_active = true")
-    elif status == "failed":
-        conditions.append("is_active = false")
-    if search:
-        conditions.append("(summary ILIKE %s OR content ILIKE %s OR category ILIKE %s)")
-        params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
-
-    where  = " AND ".join(conditions)
-    offset = (page - 1) * page_size
-
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(f"SELECT COUNT(*) FROM {_table} WHERE {where}", params)
-            total = cur.fetchone()["count"]
-            cur.execute(f"""
-                SELECT id, category, summary, content,
-                       CASE WHEN is_active = false THEN 'failed'
-                            WHEN embedding IS NOT NULL THEN 'indexed'
-                            ELSE 'pending' END AS status,
-                       updated_at
-                FROM {_table}
-                WHERE {where}
-                ORDER BY updated_at DESC
-                LIMIT %s OFFSET %s
-            """, params + [page_size, offset])
-            return {"total": total, "page": page, "page_size": page_size, "items": cur.fetchall()}
+    return ks.list_knowledge(_table, category, status, search, page, page_size)
 
 
 @router.get("/categories")
 def list_categories():
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"SELECT DISTINCT category, COUNT(*) as count FROM {_table} GROUP BY category ORDER BY category")
-            rows = cur.fetchall()
-            return [{"category": r[0], "count": r[1]} for r in rows]
+    return ks.list_categories(_table)
 
 
 @router.post("/knowledge", status_code=201)
 def create_knowledge(item: KnowledgeItem):
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(f"""
-                INSERT INTO {_table} (category, summary, content, is_active, updated_at)
-                VALUES (%s, %s, %s, true, NOW())
-                RETURNING id, category, summary, content, updated_at
-            """, (item.category, item.summary, item.content))
-            conn.commit()
-            return cur.fetchone()
+    return ks.create_knowledge(_table, item.category, item.summary, item.content)
 
 
 @router.put("/knowledge/{item_id}")
 def update_knowledge(item_id: str, item: KnowledgeItemUpdate):
-    fields, params = [], []
-    if item.category is not None:
-        fields.append("category = %s"); params.append(item.category)
-    if item.summary is not None:
-        fields.append("summary = %s");  params.append(item.summary)
-    if item.content is not None:
-        fields.append("content = %s");  params.append(item.content)
-        fields.append("embedding = NULL")
-    fields.append("updated_at = NOW()")
-    params.append(item_id)
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"UPDATE {_table} SET {', '.join(fields)} WHERE id = %s", params)
-            conn.commit()
-            if cur.rowcount == 0:
-                raise HTTPException(404, "Item not found")
-            return {"ok": True}
+    ok = ks.update_knowledge(_table, item_id, item.category, item.summary, item.content)
+    if not ok:
+        raise HTTPException(404, "Item not found")
+    return {"ok": True}
 
 
 @router.delete("/knowledge/{item_id}")
 def delete_knowledge(item_id: str):
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"DELETE FROM {_table} WHERE id = %s", (item_id,))
-            conn.commit()
-            if cur.rowcount == 0:
-                raise HTTPException(404, "Item not found")
-            return {"ok": True}
+    ok = ks.delete_knowledge(_table, item_id)
+    if not ok:
+        raise HTTPException(404, "Item not found")
+    return {"ok": True}
 
 
 @router.delete("/knowledge")
 def delete_many(ids: List[str]):
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"DELETE FROM {_table} WHERE id = ANY(%s)", (ids,))
-            conn.commit()
-            return {"deleted": cur.rowcount}
+    return {"deleted": ks.delete_many(_table, ids)}
 
 
 @router.post("/knowledge/vectorize")
 def vectorize(ids: List[str]):
-    results = {"success": 0, "failed": 0, "errors": []}
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(f"SELECT id, summary, content FROM {_table} WHERE id = ANY(%s)", (ids,))
-            items = cur.fetchall()
-        for item in items:
-            try:
-                vec     = _embed_client.embed(item["summary"] + " " + item["content"])
-                vec_str = "[" + ",".join(str(v) for v in vec) + "]"
-                with conn.cursor() as c:
-                    c.execute(f"""
-                        UPDATE {_table}
-                        SET embedding = %s::vector, is_active = true, updated_at = NOW()
-                        WHERE id = %s
-                    """, (vec_str, item["id"]))
-                conn.commit()
-                results["success"] += 1
-            except Exception as e:
-                results["failed"] += 1
-                results["errors"].append(str(e))
-    return results
+    return ks.vectorize_ids(_table, ids, _embed_client)
 
 
 @router.get("/search")
@@ -213,18 +122,8 @@ def search(q: str, category: Optional[str] = None, limit: int = 5):
 
 @router.post("/knowledge/import")
 def bulk_import(items: List[KnowledgeItem]):
-    inserted = 0
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            for item in items:
-                cur.execute(f"""
-                    INSERT INTO {_table} (category, summary, content, is_active, updated_at)
-                    VALUES (%s, %s, %s, true, NOW())
-                """, (item.category, item.summary, item.content))
-                inserted += 1
-        conn.commit()
+    inserted = ks.bulk_import(_table, [i.dict() for i in items])
     return {"inserted": inserted}
-
 
 # ═══════════════════════════════════════════════════
 #  配置管理 API — 全部委托给 AiConfig
@@ -299,28 +198,19 @@ def get_conversation(sn: str):
     return doc
 
 from fastapi import UploadFile, File
-from search.ingestion_service import _readFromTxt, _upsertToDatabase, _cleanContent
-import io, time as _time
+from search.ingestion_service import ingest_entries
 
 @router.post("/knowledge/import/txt")
+
 async def import_txt(file: UploadFile = File(...)):
     text    = (await file.read()).decode("utf-8")
     entries = _readFromTxt_from_str(text)
     db_url  = AiConfig.getStringConfig("db.postgres.url",      "")
     db_user = AiConfig.getStringConfig("db.postgres.user",     "postgres")
     db_pass = AiConfig.getStringConfig("db.postgres.password", "")
-    success = 0
-    for entry in entries:
-        try:
-            content = _cleanContent(entry.content)
-            semantic_text = f"Category: [{entry.category}]. Summary: {entry.summary}. Content: {content}"
-            vec = _embed_client.embed(semantic_text)
-            _upsertToDatabase(_table, entry, vec, db_url, db_user, db_pass)
-            success += 1
-        except Exception as e:
-            logger.error(f"import_txt entry {entry.id} failed: {e}")
-    return {"inserted": success, "total": len(entries)}
 
+    results = ingest_entries(_table, entries, db_url, db_user, db_pass)
+    return {"inserted": results["success"], "total": results["total"]}
 # 追加到 web/main.py 末尾
 
 # ═══════════════════════════════════════════════════
@@ -333,7 +223,7 @@ async def import_txt(file: UploadFile = File(...)):
 #  缓存管理 API  （追加到 web/main.py 末尾）
 # ═══════════════════════════════════════════════════
 from search.cache_service import (
-    k1_put, k2_put,
+    k1_put, k2_put, warmup as _cache_warmup,
     _get_redis, _K1_INDEX, _K2_INDEX,
     _PREFIX_K1, _PREFIX_K2, convert,
 )
@@ -444,7 +334,32 @@ def cache_delete_k1(item_id: str):
     r.delete(_PREFIX_K1 + item_id)
     return {"ok": True}
 
+@router.post("/cache/warmup")
+def cache_warmup():
+    """
+    手动触发一次缓存初始化：等同于 ai.conf 里 cache.warmup.on_start=true 时
+    启动进程会做的事（清空Redis + 从FAQ文件重新灌入K1+K2），
+    区别是这里随时可以手动点，不需要重启进程。
+    """
+    config_dir = AiConfig.configPath
+    if not config_dir:
+        raise HTTPException(500, "AiConfig 尚未初始化，config_dir 为空")
 
+    import session.session_manager as sm
+    if sm.ACTIVE_ROUTER is None:
+        raise HTTPException(500, "ACTIVE_ROUTER 尚未初始化，无法获取 embed_client")
+
+    try:
+        _cache_warmup(config_dir, sm.ACTIVE_ROUTER.embed())
+    except Exception as e:
+        logger.error(f"cache_warmup failed: {e}", exc_info=True)
+        raise HTTPException(500, f"缓存初始化失败: {e}")
+    r = _get_redis()
+    return {
+        "ok":        True,
+        "k1_count":  r.zcard(_K1_INDEX),
+        "k2_count":  r.zcard(_K2_INDEX),
+    }
 @router.delete("/cache/k2/{item_id}")
 def cache_delete_k2(item_id: str):
     r = _get_redis()

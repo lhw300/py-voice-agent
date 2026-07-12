@@ -40,6 +40,13 @@ class ChitchatHandler(IntentHandler):
     """
     def handle(self, raw_text: str, result: IntentResult, session) -> ChatAnswer:
 
+
+        # ★ 有待续接问题时，直接转给QueryHandler统一处理，避免逻辑重复 ★
+        if session.getPendingQuery() is not None:
+            from handler.query_handler import QueryHandler
+            return QueryHandler().handle(raw_text, result, session)
+
+
         logger.debug("[ChitchatHandler] switching to pure chat mode, skipping knowledge retrieval")
         try:
             # Java: String optimizedQuery = result.refinedQuery != null ? result.refinedQuery : rawText;

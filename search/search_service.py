@@ -105,6 +105,8 @@ def getRelevantKnowledge(
         vector: Optional[List[float]] = None,
 ) -> List[KnowledgeItem]:
     init()
+    embed_desc = embed_client.describe() if hasattr(embed_client, "describe") else embed_client.modeType()
+    logger.debug(f"[getRelevantKnowledge] table={table_name}  embed_client={embed_desc}")
 
     # Java: Step 1 — 向量化
     start_embed = time.time()

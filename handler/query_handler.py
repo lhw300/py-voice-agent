@@ -33,6 +33,16 @@ class QueryHandler(IntentHandler):
 
     def handle(self, raw_text: str, result: IntentResult, session) -> ChatAnswer:
         logger.debug("[QueryHandler] refinedQuery=" + str(result.refined_query))
+        # ★ 新增：优先处理"续接被搁置的问题" ★
+        pending = session.getPendingQuery()
+        if pending is not None:
+            if result.category and result.category.strip():
+                session.setCurrentCategory(result.category)
+            if session.getCurrentCategory() is not None:
+                logger.debug("[QueryHandler] 续接被搁置的问题: " + pending)
+                session.clearPendingQuery()
+                return session.askByQueryMode(pending, False, allow_cache_write=False)
+            # 身份还没确认，继续走下面的常规追问逻辑
 
         category_required = AiConfig.getBooleanConfig("query.category.required", False)
 

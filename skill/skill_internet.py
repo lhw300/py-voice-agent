@@ -11,6 +11,7 @@ State machine is code-driven; LLM only extracts two fields: affirm / value.
 """
 
 import logging
+import re
 import time
 from typing import Optional
 
@@ -25,7 +26,8 @@ _DRAFT_KEY  = "_repair_draft"    # confirmed fields: {address, fault_desc, conta
 _STAGE_KEY  = "_repair_stage"    # current stage string
 _TEMP_KEY   = "_repair_temp"     # pending value awaiting confirmation (not written to draft yet)
 _CALLER_KEY = "_repair_caller"   # caller phone number, shared across stages
-
+_INVALID_COUNT_KEY = "_repair_invalid_count"   # 连续无效value计数，防止语气词导致无限循环
+_INVALID_MAX = 3                                # 连续3次无效输入，强制放弃当前流程
 # ══════════════════════════════════════════════════════════════
 # Flow configuration — toggle each collection step on/off
 # ══════════════════════════════════════════════════════════════
@@ -51,6 +53,46 @@ S_PHONE_CONFIRM   = "phone_confirm"
 S_TIME_INPUT      = "time_input"
 S_TIME_CONFIRM    = "time_confirm"
 S_SUMMARY_CONFIRM = "summary_confirm"
+
+_VALUE_INPUT_STAGES = {S_ACCOUNT_INPUT, S_ADDRESS_INPUT, S_PHONE_INPUT, S_TIME_INPUT}
+
+_FILLER_WORDS = {"啊", "呃", "嗯", "哦", "什么", "什么啊", "啥", "唔", "诶", "呀", "欸"}
+
+
+
+# 每个 stage 对应字段的长度规则：
+#   min_len      —— 至少要有这么长（不满足则判定无效）
+#   exact_len    —— 必须正好等于这个长度（配合 digits_only 提取数字后再判断，用于手机号这类定长字段）
+#   digits_only  —— 判断长度前先剔除非数字字符（应对"138-0013-8000"这种带分隔符的口语表达）
+_VALUE_LENGTH_RULES = {
+    S_ACCOUNT_INPUT: {"min_digits": 4},                         # 宽带账号/绑定手机号，至少要含4位数字（不看整体字符数，避免误伤"无限"这类正常但非账号的测试词）
+    S_ADDRESS_INPUT: {"min_len": 4},                             # 地址是自然语言描述，用整体长度判断合理
+    S_PHONE_INPUT:   {"exact_len": 11, "digits_only": True},     # 国内手机号固定11位数字
+    S_TIME_INPUT:    {"min_len": 2},                             # 最短合理表达如"明天"
+}
+
+def _is_meaningless_value(value: Optional[str], stage: Optional[str] = None) -> bool:
+    """粗筛：过滤纯语气词/单字符输入，并按字段做校验（不做严格格式校验，避免误伤口语化表达）"""
+    if not value:
+        return True
+    stripped = value.strip()
+    if stripped in _FILLER_WORDS or len(stripped) <= 1:
+        return True
+
+    rule = _VALUE_LENGTH_RULES.get(stage)
+    if not rule:
+        return False
+
+    if "min_digits" in rule:
+        digits = re.sub(r"\D", "", stripped)
+        return len(digits) < rule["min_digits"]
+
+    check_str = re.sub(r"\D", "", stripped) if rule.get("digits_only") else stripped
+    if "exact_len" in rule:
+        return len(check_str) != rule["exact_len"]
+    if "min_len" in rule:
+        return len(check_str) < rule["min_len"]
+    return False
 
 # 只有在确认类 stage 才显示待确认内容，收集类 stage 不显示
 _CONFIRM_STAGES = {
@@ -97,7 +139,13 @@ def _clear_all(session):
     for key in (_DRAFT_KEY, _STAGE_KEY, _TEMP_KEY, _CALLER_KEY):
         setattr(session, key, None)
 
+def _inc_invalid_count(session) -> int:
+    count = getattr(session, _INVALID_COUNT_KEY, 0) + 1
+    setattr(session, _INVALID_COUNT_KEY, count)
+    return count
 
+def _clear_invalid_count(session) -> None:
+    setattr(session, _INVALID_COUNT_KEY, 0)
 # ══════════════════════════════════════════════════════════════
 # Return value helpers
 # ══════════════════════════════════════════════════════════════
@@ -175,7 +223,7 @@ async def _stage_addr_confirm(session, affirm, value) -> dict:
         draft["address"] = _get_temp(session)
         _set_draft(session, draft)
         _set_temp(session, None)
-       
+
         # advance to next enabled step
         if _FLOW_CONFIG["collect_fault"]:
             _set_stage(session, S_FAULT_INPUT)
@@ -191,7 +239,7 @@ async def _stage_addr_confirm(session, affirm, value) -> dict:
         # user denies address → switch to scene 2 (repair for someone else)
         _set_temp(session, None)
         _set_stage(session, S_ACCOUNT_INPUT)
-       
+
         return _need("好的，请提供宽带账号或绑定手机号码。")
     else:
         temp = _get_temp(session)
@@ -228,7 +276,7 @@ async def _stage_account_confirm(session, affirm, value) -> dict:
             return _need("好的，请口述您的报修地址。")
         else:
             _set_stage(session, S_ACCOUNT_INPUT)
-           
+
             return _need("抱歉，未能查到该账号的信息，请重新提供宽带账号或绑定手机号码。")
     # no clear response — repeat confirmation
     account = _get_temp(session)
@@ -255,7 +303,7 @@ async def _stage_address_confirm(session, affirm, value) -> dict:
         draft["address"] = _get_temp(session)
         _set_draft(session, draft)
         _set_temp(session, None)
-       
+
         # advance to next enabled step
         if _FLOW_CONFIG["collect_fault"]:
             _set_stage(session, S_FAULT_INPUT)
@@ -270,7 +318,7 @@ async def _stage_address_confirm(session, affirm, value) -> dict:
     elif affirm is False:
         _set_temp(session, None)
         _set_stage(session, S_ADDRESS_INPUT)
-       
+
         return _need("好的，请重新口述您的报修地址。")
     else:
         temp = _get_temp(session)
@@ -308,7 +356,7 @@ async def _stage_fault_confirm(session, affirm, value) -> dict:
     elif affirm is False:
         _set_temp(session, None)
         _set_stage(session, S_FAULT_INPUT)
-       
+
         return _need("好的，请重新描述您的故障情况。")
     else:
         temp = _get_temp(session)
@@ -369,7 +417,7 @@ async def _stage_phone_confirm(session, affirm, value) -> dict:
     elif affirm is False:
         _set_temp(session, None)
         _set_stage(session, S_PHONE_INPUT)
-       
+
         return _need("好的，请重新提供您的联系电话。")
     else:
         temp = _get_temp(session)
@@ -402,7 +450,7 @@ async def _stage_time_confirm(session, affirm, value) -> dict:
     elif affirm is False:
         _set_temp(session, None)
         _set_stage(session, S_TIME_INPUT)
-       
+
         return _need("好的，请重新说出预约上门时间。")
     else:
         temp = _get_temp(session)
@@ -461,6 +509,22 @@ async def handle(session, tool_name: str = None, phone: str = "", affirm=None, v
 
     if stage is None:
         return await _stage_init(session, phone)
+    # 通用粗筛：语气词/单字符/长度不达标的 value 在收集类 stage 视为"未提供"，
+    # 复用各 stage 函数已有的 `if not value:` 分支重新引导，不需要逐个函数改
+    # 通用粗筛：语气词/单字符/长度不达标的 value 在收集类 stage 视为"未提供"
+    if stage in _VALUE_INPUT_STAGES and _is_meaningless_value(value, stage):
+        logger.debug("[repair] value=%r 在 stage=%s 被判定为无效内容，视为未提供", value, stage)
+        value = None
+        invalid_count = _inc_invalid_count(session)
+        if invalid_count >= _INVALID_MAX:
+            logger.info("[repair] 连续 %d 次无效输入，强制放弃报修流程", invalid_count)
+            _clear_all(session)
+            return {
+                "status": SkillStatus.CANCELLED,
+                "msg": "抱歉，未能获取到有效信息，本次报修流程已结束，如有其他问题欢迎继续咨询。",
+            }
+    elif value:
+        _clear_invalid_count(session)   # 这轮提供了有效内容，计数清零，避免"这次有效下次又从0算起"的误伤
 
     dispatch = {
         S_ADDR_CONFIRM:    _stage_addr_confirm,
@@ -610,7 +674,7 @@ _TOOL_CANCEL = {
     "type": "function",
     "function": {
         "name": "cancel_skill",
-        "description": "用户明确表示放弃、取消当前流程时调用。",
+        "description": "用户明确表示放弃、取消当前报修流程时调用，比如说 不修了、算了、取消报修、不用上门了 等等。",
         "parameters": {
             "type": "object",
             "properties": {"reason": {"type": "string", "description": "用户放弃的原因，可选"}},

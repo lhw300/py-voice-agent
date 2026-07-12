@@ -34,9 +34,8 @@ class RerankClient:
         from sentence_transformers import CrossEncoder
         logger.debug("⏳ loading Rerank model: " + model_path)
         self._model = CrossEncoder(model_path)
-        logger.debug("✅ Rerank model loaded")
-        #logger.info("⏳ 正在预热精排模型 (Warming up Reranker)...")
-       # self._model.predict([["warmup", "warmup"]], max_length=16, show_progress_bar=False)
+        logger.debug("✅ Rerank model loaded, device=" + str(next(self._model.parameters()).device))
+            # self._model.predict([["warmup", "warmup"]], max_length=16, show_progress_bar=False)
        # logger.info("✅ 精排模型预热完毕")
     """
     public double rerank(String query, String document) {

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import psycopg2
+from psycopg2.extras import RealDictCursor
 
 import ai_config as AiConfig
 
@@ -51,6 +52,60 @@ public static void main(String[] args) throws Exception {
 }
 """
 # ---------------------------------------------------------------------------
+def build_semantic_text(category: str, summary: str, content: str) -> str:
+    """向量化文本的唯一拼接入口，批量导入和网页单条向量化都调用这个函数，
+    确保任何地方计算出来的向量都用同一套格式，不会产生向量空间不一致的问题。"""
+    return f"Category: [{category}]. Summary: {summary}. Content: {content}"
+
+def ingest_entries(
+        table_name: str,
+        entries: List[KnowledgeEntry],
+        db_url: str,
+        db_user: str,
+        db_pass: str,
+) -> dict:
+    """
+    共享的"条目列表 → 逐条清洗 + upsert（不含向量化）"核心逻辑。
+    命令行批量导入（run()）和网页TXT导入（main_web.py 的 import_txt）都调用这个函数，
+    确保两条入口的清洗规则、默认值、跳过逻辑完全一致。
+
+    导入阶段不做向量化，写入后记录状态为"待向量化"(pending)，
+    后续通过网页"更新向量"按钮或单独的向量化流程统一处理，
+    避免导入时被 Embedding API 调用拖慢、也让导入和向量化两个操作互相独立、便于分别重试。
+    """
+    import time
+    results = {"success": 0, "failed": 0, "total": len(entries)}
+    total_start = time.time()
+
+    for i, entry in enumerate(entries):
+        if entry.id.upper() == "ID":
+            continue
+
+        category = (entry.category.strip() if entry.category else "Uncategorized")[:50]
+        summary  = (entry.summary.strip()  if entry.summary  else "No summary")[:255]
+        content  = _cleanContent(entry.content) if entry.content else ""
+
+        if not content:
+            logger.debug(f"⚠️ Entry {i + 1} has empty content, skipped")
+            continue
+
+        try:
+            t1 = time.time()
+            _upsertToDatabase(table_name, entry, None, db_url, db_user, db_pass)
+            db_ms = int((time.time() - t1) * 1000)
+
+            logger.debug(f"   ✅ ID [{entry.id}]  db={db_ms}ms（待向量化）")
+            results["success"] += 1
+        except Exception as e:
+            logger.error(f"   ❌ ID [{entry.id}] failed: {e}")
+            results["failed"] += 1
+
+    total_ms = int((time.time() - total_start) * 1000)
+    logger.debug(f"✨ Import complete! success: {results['success']} / {results['total']}"
+                 f"  total={total_ms}ms  avg={total_ms // max(results['success'], 1)}ms/entry"
+                 f"  （注意：仅写入文本，向量化需后续手动触发）")
+    results["total_ms"] = total_ms
+    return results
 
 def run(base_dir: str) -> None:
     import time
@@ -97,53 +152,48 @@ def run(base_dir: str) -> None:
 
     logger.debug("📂 Total entries: " + str(len(entries)) + "")
 
-    run_type = AiConfig.getStringConfig("system.run.type", "hybrid-qwen").lower()
+    results = ingest_entries(table_name, entries, db_url, db_user, db_pass)
+    logger.debug(f"✨ 命令行批量导入完成: {results}")
 
-    success_count = 0
-    total_start   = time.time()
+# ---------------------------------------------------------------------------
+# 供 Web 管理后台调用：按 id 列表重新向量化，复用跟批量导入完全一致的
+# semantic_text 拼接格式（包含 category），避免两条入口生成不一致的向量。
+# conn 由调用方（router.py）传入并负责关闭，这里不新开连接。
+# ---------------------------------------------------------------------------
+def vectorize_ids(conn, table_name: str, ids: List[str], embed_client) -> dict:
+    results = {"success": 0, "failed": 0, "errors": []}
 
-    for i, entry in enumerate(entries):
-        if entry.id.upper() == "ID":
-            continue
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            f"SELECT id, category, summary, content FROM {table_name} WHERE id = ANY(%s)",
+            (ids,)
+        )
+        items = cur.fetchall()
 
-        category = (entry.category.strip() if entry.category else "Uncategorized")[:50]
-        summary  = (entry.summary.strip()  if entry.summary  else "No summary")[:255]
-        content  = _cleanContent(entry.content) if entry.content else ""
-
-        if not content:
-            logger.debug("⚠️ Entry " + str(i + 1) + " has empty content, skipped")
-            continue
-
-        logger.debug("--------------------------------------------------")
-        logger.debug("🔍 [" + str(i + 1) + "] category=" + category + "  summary=" + summary)
-
+    logger.info(f"[vectorize_ids] 请求 {len(ids)} 个id，实际取到 {len(items)} 条")
+    for item in items:
         try:
-            if run_type in ("qwen", "openai"):
-                semantic_text = f"Category: [{category}]. Summary: {summary}. Content: {content}"
-            else:
-                semantic_text = f"Category: [{category}]. Summary: {summary}. Content: {content}"
+            # 与 run() 批量导入保持同一格式，确保向量空间一致
+            semantic_text = f"Category: [{item['category']}]. Summary: {item['summary']}. Content: {item['content']}"
+            vector  = embed_client.embed(semantic_text)
+            vec_str = "[" + ",".join(str(v) for v in vector) + "]"
 
-            t0     = time.time()
-            vector = embed_client.embed(semantic_text)
-            embed_ms = int((time.time() - t0) * 1000)
-
-            t1 = time.time()
-            _upsertToDatabase(table_name, entry, vector, db_url, db_user, db_pass)
-            db_ms = int((time.time() - t1) * 1000)
-
-            logger.debug("   ✅ ID [" + entry.id + "]  embed=" + str(embed_ms)
-                         + "ms  db=" + str(db_ms) + "ms")
-            success_count += 1
-
+            with conn.cursor() as c:
+                c.execute(f"""
+                    UPDATE {table_name}
+                    SET embedding = %s::vector, is_active = true, updated_at = NOW()
+                    WHERE id = %s
+                """, (vec_str, item["id"]))
+            conn.commit()
+            results["success"] += 1
+            logger.debug(f"[vectorize_ids] id={item['id']} 成功")
         except Exception as e:
-            logger.error("   ❌ ID [" + entry.id + "] failed: " + str(e))
+            logger.error(f"[vectorize_ids] id={item['id']} summary={item.get('summary','')[:30]!r} 失败: {e}")
+            results["failed"] += 1
+            results["errors"].append(str(e))
 
-    total_ms = int((time.time() - total_start) * 1000)
-    logger.debug("✨ Import complete! success: " + str(success_count) + " / " + str(len(entries))
-                 + "  total=" + str(total_ms) + "ms"
-                 + "  avg=" + str(total_ms // max(success_count, 1)) + "ms/entry")
-
-
+    logger.info(f"[vectorize_ids] 完成：成功 {results['success']} 条，失败 {results['failed']} 条")
+    return results
 # ---------------------------------------------------------------------------
 """
 private static List<KnowledgeEntry> readFromTxt(String filePath) throws Exception {
@@ -243,12 +293,12 @@ private static void upsertToDatabase(String tableName, KnowledgeEntry entry,
 """
 # ---------------------------------------------------------------------------
 def _upsertToDatabase(
-    table_name: str,
-    entry: KnowledgeEntry,
-    vector: List[float],
-    db_url: str,
-    db_user: str,
-    db_pass: str,
+        table_name: str,
+        entry: KnowledgeEntry,
+        vector: Optional[List[float]],
+        db_url: str,
+        db_user: str,
+        db_pass: str,
 ) -> None:
     # Convert jdbc URL to psycopg2 params
     dsn      = db_url.replace("jdbc:postgresql://", "")
@@ -257,27 +307,43 @@ def _upsertToDatabase(
     host     = parts[0]
     port     = int(parts[1]) if len(parts) > 1 else 5432
 
-    # Java: 将 double[] 转换为 pgvector 字符串格式 "[v1,v2...]"
-    vec_str = "[" + ",".join(str(v) for v in vector) + "]"
-
-    sql = (
-        "INSERT INTO " + table_name + " "
-        "(id, category, summary, content, source_name, is_active, create_time, embedding) "
-        "VALUES (%s, %s, %s, %s, 'System_Import', true, CURRENT_TIMESTAMP, %s::vector) "
-        "ON CONFLICT (id) DO UPDATE SET "
-        "category=EXCLUDED.category, "
-        "summary=EXCLUDED.summary, "
-        "content=EXCLUDED.content, "
-        "embedding=EXCLUDED.embedding, "
-        "create_time=CURRENT_TIMESTAMP"
-    )
-
     conn = psycopg2.connect(host=host, port=port, dbname=dbname,
-                             user=db_user, password=db_pass)
+                            user=db_user, password=db_pass)
     try:
         with conn.cursor() as cur:
-            cur.execute(sql, (entry.id, entry.category, entry.summary,
-                              entry.content, vec_str))
+            if vector is not None:
+                # 带向量：插入/更新时一并写入 embedding，is_active=true（可被立即检索）
+                vec_str = "[" + ",".join(str(v) for v in vector) + "]"
+                sql = (
+                        "INSERT INTO " + table_name + " "
+                                                      "(id, category, summary, content, source_name, is_active, create_time, embedding) "
+                                                      "VALUES (%s, %s, %s, %s, 'System_Import', true, CURRENT_TIMESTAMP, %s::vector) "
+                                                      "ON CONFLICT (id) DO UPDATE SET "
+                                                      "category=EXCLUDED.category, "
+                                                      "summary=EXCLUDED.summary, "
+                                                      "content=EXCLUDED.content, "
+                                                      "embedding=EXCLUDED.embedding, "
+                                                      "create_time=CURRENT_TIMESTAMP"
+                )
+                cur.execute(sql, (entry.id, entry.category, entry.summary,
+                                  entry.content, vec_str))
+            else:
+                # 不带向量：只写文本字段，embedding 留空，is_active=true
+                # id 已存在时：更新文本字段，同时清空旧向量（embedding=NULL），
+                # 使这条记录回到"待向量化"(pending)状态 —— 不管内容实际有没有变，
+                # 只要被重新导入过，就统一要求重新向量化，逻辑简单、不会有遗漏
+                sql = (
+                        "INSERT INTO " + table_name + " "
+                                                      "(id, category, summary, content, source_name, is_active, create_time) "
+                                                      "VALUES (%s, %s, %s, %s, 'System_Import', true, CURRENT_TIMESTAMP) "
+                                                      "ON CONFLICT (id) DO UPDATE SET "
+                                                      "category=EXCLUDED.category, "
+                                                      "summary=EXCLUDED.summary, "
+                                                      "content=EXCLUDED.content, "
+                                                      "embedding=NULL, "
+                                                      "create_time=CURRENT_TIMESTAMP"
+                )
+                cur.execute(sql, (entry.id, entry.category, entry.summary, entry.content))
         conn.commit()
     finally:
         conn.close()

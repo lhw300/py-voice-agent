@@ -42,6 +42,7 @@ class ChatRequest(BaseModel):
     phone:      str
     vo_id:      str
     text:       str
+    turn:       str
 
 
 class ChatAnswer(BaseModel):
