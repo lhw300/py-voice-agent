@@ -6,6 +6,8 @@
         <list>
           <option value="pymysql" />
           <option value="pycryptodome" />
+          <option value="aiokafka" />
+          <option value="websockets" />
         </list>
       </option>
     </inspection_tool>

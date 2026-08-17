@@ -68,7 +68,7 @@ import search.mongo_service as mongo_service
 import main_ai
 import web.main_web as web_router
 import web.auth_router as auth_router
-
+import kafka_ws_bridge
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
@@ -81,10 +81,11 @@ async def lifespan(app: FastAPI):
     table        = AiConfig.getStringConfig("db.postgres.table.online", "enterprise_knowledge_1024")
     web_router.init(embed_client, table)
     mongo_service.init()
+    kafka_ws_bridge.start_consumer_background()
     logger.info(f"✅ Ready — port 7626  config={CONFIG_DIR}  table={table}")
     yield
     logger.info("🛑 Shutting down ...")
-
+    kafka_ws_bridge.stop_consumer_background()
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="LCallAI Voice Agent", lifespan=lifespan)
@@ -99,6 +100,7 @@ app.add_middleware(
 app.include_router(web_router.router)  # /api/...
 app.include_router(main_ai.router)     # /ai_send  /filling  /filling_ai
 app.include_router(auth_router.router)
+app.include_router(kafka_ws_bridge.router)  # /ws/transcript
 
 @app.get("/health")
 def health():

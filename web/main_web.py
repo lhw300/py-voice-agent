@@ -248,6 +248,7 @@ def cache_list(
         # zrevrange = 按 score（插入时间）倒序
         total_keys = r.zcard(_K1_INDEX)
         keys = r.zrevrange(_K1_INDEX, offset, offset + page_size - 1)
+        logger.debug(f"[cache_list][k1] index={_K1_INDEX} prefix={_PREFIX_K1} total_keys={total_keys} offset={offset} page_size={page_size} fetched_keys={len(keys)}")
         for h_bytes in keys:
             h   = _ensure_str(h_bytes)
             val = r.get(_PREFIX_K1 + h)

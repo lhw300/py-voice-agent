@@ -177,7 +177,7 @@ async def _query_address_by_account(account: str) -> Optional[str]:
 
 async def _create_order(draft: dict) -> str:
     """Create a repair order and return the order ID."""
-    order_id = f"WB{int(time.time())}"
+    order_id = f"{int(time.time())}"
     logger.info("[repair] order created: %s | %s", order_id, draft)
     return order_id
 

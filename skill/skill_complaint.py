@@ -137,7 +137,7 @@ def _format_missing_prompt(missing: list) -> str:
 
 async def _create_ticket(phone: str, draft: dict) -> dict:
     # TODO: 替换为真实落库逻辑
-    ticket_id = f"CMP{int(time.time())}"
+    ticket_id = f"{int(time.time())}"
     logger.info(f"complaint accepted | phone={phone} ticket={ticket_id} draft={draft}")
     return {"ticket_id": ticket_id}
 

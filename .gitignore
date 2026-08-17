@@ -36,3 +36,15 @@ git-command.txt
 maven-linux命令.txt
 ollama.txt
 postgres.txt
+
+# 前端源码放行（web/src 下的组件/脚本/样式，排除 node_modules 和构建产物）
+!web/src/
+!web/src/**/
+!web/src/**/*.jsx
+!web/src/**/*.js
+!web/src/**/*.ts
+!web/src/**/*.tsx
+!web/src/**/*.css
+!web/src/**/*.json
+!web/package.json
+!web/vite.config.js

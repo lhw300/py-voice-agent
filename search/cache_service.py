@@ -50,10 +50,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Redis key constants
 # ---------------------------------------------------------------------------
-_PREFIX_K1    = "cache:k1:"
-_PREFIX_K2    = "cache:k2:vec:"
-_K1_INDEX     = "cache:k1:_index"
-_K2_INDEX     = "cache:k2:_index"
+# 从配置或环境变量读取当前实例的业务标识
+TENANT = AiConfig.getStringConfig("redis.tenant.name", "default")  # "clinic" / "complaint" / ...
+
+_PREFIX_K1    = f"cache:{TENANT}:k1:"
+_PREFIX_K2    = f"cache:{TENANT}:k2:vec:"
+_K1_INDEX     = f"cache:{TENANT}:k1:_index"
+_K2_INDEX     = f"cache:{TENANT}:k2:_index"
 
 # ---------------------------------------------------------------------------
 # Module state
@@ -89,14 +92,25 @@ def init(config_dir: str = "e:/ai") -> None:
     logger.debug(f"[cache] TTL={'no expiry' if _cache_ttl_seconds == 0 else str(days) + ' days'}")
 
     _load_convert_rules()
+
+
+
     try:
         r = _get_redis()
-        r.ping()
+        for index_key, prefix in [(_K1_INDEX, _PREFIX_K1), (_K2_INDEX, _PREFIX_K2)]:
+            ids = r.zrange(index_key, 0, -1)
+            if ids:
+                pipe = r.pipeline()
+                for eid in ids:
+                    pipe.delete(prefix + eid)
+                pipe.delete(index_key)
+                pipe.execute()
+        logger.debug(f"[cache] flushed tenant={TENANT} scope before warmup")
         _redis_available = True
-        logger.debug("[cache] Redis ping OK")
     except Exception as e:
         _redis_available = False
-        logger.warning(f"[cache] Redis unavailable, cache disabled: {e}")
+        logger.warning(f"[cache] flush failed: {e}")
+
     _initialized = True
     logger.debug("[cache] init complete")
 
@@ -452,8 +466,16 @@ def warmup(config_dir: str, embed_client) -> None:
     embed_desc = embed_client.describe() if hasattr(embed_client, "describe") else embed_client.modeType()
     logger.info(f"[cache] warmup embed_client={embed_desc}")
     try:
-        _get_redis().flushdb()
-        logger.debug("[cache] Redis flushed before warmup")
+        r = _get_redis()
+        for index_key, prefix in [(_K1_INDEX, _PREFIX_K1), (_K2_INDEX, _PREFIX_K2)]:
+            ids = r.zrange(index_key, 0, -1)
+            if ids:
+                pipe = r.pipeline()
+                for eid in ids:
+                    pipe.delete(prefix + eid)
+                pipe.delete(index_key)
+                pipe.execute()
+        logger.debug(f"[cache] cleared tenant={TENANT} scope ({len(ids) if 'ids' in dir() else 0} k2, index cleared) before warmup")
     except Exception as e:
         logger.warning(f"[cache] flush failed: {e}")
 
